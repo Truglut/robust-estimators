@@ -57,7 +57,16 @@ class ImageBatch:
 
         return np.asarray(per_freq_variance.mean())
 
-    def select_space_data(self, space: ImageSpace):
+    def select_space(self, space: ImageSpace) -> np.ndarray:
+        if space == "real":
+            return self.real
+
+        if space == "fourier":
+            return self.ensure_fourier()
+
+        raise ValueError(f"Unsupported image space: {space}")
+
+    def select_space_data(self, space: ImageSpace) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         if space == "real":
             return self.real, self.real_variance(), None
 

@@ -97,7 +97,7 @@ class RecursiveGMMEstimator(Estimator):
             n_components=2,
             max_iter=self.gmm_max_iter,
             tol=self.gmm_tol,
-            random_state=self.model.random_state, # type: ignore
+            random_state=self.model.random_state,  # type: ignore
             warm_start=True,
         )
 
@@ -114,8 +114,8 @@ class RecursiveGMMEstimator(Estimator):
             np.array(mean_quantiles, dtype=distances.dtype),
         )
 
-        self.model.means_init = component_means.reshape(2, 1) # type: ignore
-        self.model.weights_init = component_weights # type: ignore
+        self.model.means_init = component_means.reshape(2, 1)  # type: ignore
+        self.model.weights_init = component_weights  # type: ignore
 
     def _standardize(self, distances: np.ndarray) -> tuple[np.ndarray, float, float]:
         """Optionally standardize distances to zero mean and unit variance."""
@@ -146,13 +146,13 @@ class RecursiveGMMEstimator(Estimator):
         return responsibilities, peak_weights
 
     def get_model_means(self) -> tuple[float, float]:
-        return tuple(self.model.means_[:, 0]) # type: ignore
+        return tuple(self.model.means_[:, 0])  # type: ignore
 
     def get_model_variances(self) -> tuple[float, float]:
-        return tuple(self.model.covariances_[:, 0, 0]) # type: ignore
+        return tuple(self.model.covariances_[:, 0, 0])  # type: ignore
 
     def get_model_weights(self) -> tuple[float, float]:
-        return tuple(self.model.weights_) # type: ignore
+        return tuple(self.model.weights_)  # type: ignore
 
     def get_good_component_idx(self) -> int:
         means = self.get_model_means()
@@ -168,7 +168,7 @@ class RecursiveGMMEstimator(Estimator):
 
         return (
             bool(separation < self.min_component_separation),
-            bool(good_weight < self.min_good_component_weight), # type: ignore
+            bool(good_weight < self.min_good_component_weight),  # type: ignore
         )
 
     def _fit_one_iteration(
@@ -290,6 +290,8 @@ class RecursiveGMMEstimator(Estimator):
 
 
 class FourierGMM(Estimator):
+    # TODO: allow for masks
+
     def __init__(self, solver: RecursiveGMMEstimator):
         self.solver = solver
 

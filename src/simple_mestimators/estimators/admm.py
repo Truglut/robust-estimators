@@ -7,6 +7,8 @@ import numpy as np
 
 from .irls import IRLSSolver
 from .fourier_irls import JointIRLSFourier
+from .base import Estimator
+
 from simple_mestimators.domain import EstimatorResult, ImageBatch, ImageSpace
 
 
@@ -38,7 +40,7 @@ class ADMMIterationResult(NamedTuple):
     next_real_transformed: np.ndarray
 
 
-class ADMMEstimator:
+class ADMMEstimator(Estimator):
     """ADMM estimator coupling real-space and Fourier-space IRLS updates."""
 
     def __init__(
