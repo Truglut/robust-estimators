@@ -1,89 +1,78 @@
-import warnings
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import mrcfile
 import scipy
 
-LABEL_TYPES = {
-    0: "generated copies of reference",
-    1: "very rotated copies of reference",
-    2: "misclassified outliers",
-    3: "noise",
-    4: "shifted copies of reference",
-}
+from .configs import DatasetConfig, IOConfig
 
-# TODO: clean this, perhaps adapt it to new config classes
+LABELS = {
+    "good": 0,
+    "rotated": 1,
+    "shifted": 2,
+    "misclassified": 3,
+    "noise": 4,
+}
+MAX_LABELS = max(LABELS.values())
+
 
 def add_noise(
     images: np.ndarray,
     rng: np.random.Generator,
     snr: float,
     signal_var: float | None = None,
-    per_image_noise_std: bool = False,
 ) -> np.ndarray:
-    """Adds Gaussian noise to a batch of images based on target SNR or explicit noise_std."""
-    if per_image_noise_std:
-        if signal_var is not None:
-            warnings.warn(
-                "signal_var was provided when requesting per image noise std. Ignoring signal_var"
-            )
+    """
+    Adds Gaussian noise to a batch of images based on a target Signal-to-Noise Ratio (SNR).
 
-        image_stds = images.std(axis=(1, 2))
-        noise_std = image_stds / np.sqrt(snr)
-    elif signal_var is not None:
-        # Calculate noise standard deviation from signal var if present
-        noise_var = signal_var / snr
-        noise_std = np.sqrt(noise_var)
-    else:
-        # Otherwise estimate signal var from images
-        global_image_std = images.std(axis=(1, 2)).mean()
-        noise_std = global_image_std / np.sqrt(snr)
+    Parameters
+    ----------
+    images : np.ndarray
+        Input image array of shape ``(n_images, height, width)``.
+    rng : np.random.Generator
+        Random number generator for sampling noise distributions.
+    snr : float
+        Target Signal-to-Noise Ratio.
+    signal_var : float | None, optional
+        Pre-calculated variance of the signal. If None, the variance is 
+        estimated from the input images, by default None.
 
-    print_noise_specs(
-        signal_var=signal_var,
-        noise_std=noise_std,
-        snr=snr,
-        per_image_noise_std=per_image_noise_std,
-    )
+    Returns
+    -------
+    np.ndarray
+        Images with added Gaussian noise, same shape as input.
+    """
+    if signal_var is None:
+        signal_var = float(images.var(axis=(-2, -1)).mean())
 
-    if per_image_noise_std:
-        noise_std = np.broadcast_to(noise_std[:, None, None], shape=images.shape)
+    noise_var = signal_var / snr
+    noise_std = np.sqrt(noise_var)
+
+    print_noise_specs(signal_var, noise_std, snr)
+
     return images + rng.normal(0, noise_std, size=images.shape)
 
 
-def print_noise_specs(
-    signal_var: float | None,
-    noise_std: np.ndarray,
-    snr: float,
-    per_image_noise_std: bool,
-):
-    signal_std = None if signal_var is None else np.sqrt(signal_var)
+def print_noise_specs(signal_var: float, noise_std: np.ndarray, snr: float):
+    signal_std = np.sqrt(signal_var)
     print("Adding noise to images:")
     print(f"\t- Signal std:         {signal_std:.4f}\tVariance:  {signal_var:6f}")
-    if per_image_noise_std:
-        print(
-            f"\t- Average noise std:  {noise_std.mean():.4f}\tVariance: {np.square(noise_std).mean():.4f}.\n"
-        )
-    else:
-        print(f"\t- Noise std:          {noise_std:.4f}\tVariance:  {noise_std**2:.6f}")
+    print(f"\t- Noise std:          {noise_std:.4f}\tVariance:  {noise_std**2:.6f}")
     print(f"\t- SNR:                {snr:.4f}\n")
 
 
 def generate_rotated_copies(
-    image: np.ndarray,
-    n_copies: int,
-    min_angle: float,
-    max_angle: float,
-    rng: np.random.Generator,
-    interpolation_order: int = 3,
+    image: np.ndarray, angles_deg: np.ndarray, interpolation_order: int = 3
 ) -> np.ndarray:
     """Generate randomly rotated copies of a single 2D reference image."""
-    output_images = np.zeros(
-        (n_copies, image.shape[0], image.shape[1]),
-        dtype=image.dtype,
-    )
+    if angles_deg.ndim != 1:
+        raise ValueError("Expected a one-dimensional angles_deg array")
 
-    angles = rng.uniform(min_angle, max_angle, size=n_copies)
+    n_copies = len(angles_deg)
+    output_images = np.empty(
+        (n_copies, image.shape[0], image.shape[1]), dtype=image.dtype
+    )
 
     # Spline interpolation of order > 1 requires prefiltering. Since all
     # rotations use the same source image, compute the spline coefficients
@@ -98,7 +87,7 @@ def generate_rotated_copies(
     else:
         rotation_input = image
 
-    for i, angle in enumerate(angles):
+    for i, angle in enumerate(angles_deg):
         scipy.ndimage.rotate(
             rotation_input,
             angle,
@@ -114,34 +103,33 @@ def generate_rotated_copies(
 
 def apply_random_rotations(
     images: np.ndarray,
-    min_angle: float,
-    max_angle: float,
-    rng: np.random.Generator,
+    angles_deg: np.ndarray,
     interpolation_order: int = 3,
     output_images: np.ndarray | None = None,
 ):
     """
-    Applies rotations to the input images, with random rotation angles chosen from
-    a uniform distribution in the ``[min_angle, max_angle)`` interval.
+    Applies 2D rotations to a batch of images using pre-sampled angles.
 
     Parameters
     ----------
     images : np.ndarray
-        Images to apply the rotations to. Array of shape ``(n_images, height, width)``.
-    min_angle, max_angle : float
-        Minimum and maximum rotation angles, in degrees.
-    rng : np.random.Generator
-        Random number generator
+        Input images to rotate. Array of shape ``(n_images, height, width)``.
+    angles_deg : np.ndarray
+        1D array of rotation angles in degrees. Must match the length of ``images``.
     interpolation_order : int, optional
-        Order of interpolation for ``scipy.ndimage.rotate``, by default 3
-    """
-    # Pre-generate all random angles for slight efficiency gain
-    angles = rng.uniform(min_angle, max_angle, size=images.shape[0])
+        Order of spline interpolation for ``scipy.ndimage.rotate``, by default 3.
+    output_images : np.ndarray | None, optional
+        Pre-allocated array to store the results. If None, a new array is created.
 
+    Returns
+    -------
+    np.ndarray
+        Rotated images array of shape ``(n_images, height, width)``.
+    """
     if output_images is None:
         output_images = np.empty_like(images)
 
-    for i, angle in enumerate(angles):
+    for i, angle in enumerate(angles_deg):
         scipy.ndimage.rotate(
             images[i],
             angle,
@@ -154,38 +142,30 @@ def apply_random_rotations(
 
 
 def generate_shifted_copies(
-    image: np.ndarray,
-    n_copies: int,
-    min_shift: float,
-    max_shift: float,
-    rng: np.random.Generator,
-    interpolation_order: int = 3,
+    image: np.ndarray, shifts: np.ndarray, interpolation_order: int = 3
 ):
     """
-    Generate shifted copies of an image.
-
-    The vertical and horizontal shifts are independently sampled from a
-    uniform distribution over ``[min_shift, max_shift)``.
+    Generates shifted copies of a single 2D reference image.
 
     Parameters
     ----------
     image : np.ndarray
-        Input image of shape ``(height, width)``.
-    n_copies : int
-        Number of shifted copies to generate.
-    min_shift, max_shift : float
-        Minimum and maximum shifts, in pixels.
-    rng : np.random.Generator
-        Random number generator.
-    interpolation_order : int, default=3
-        Spline interpolation order passed to ``scipy.ndimage.shift``.
+        Input 2D reference image of shape ``(height, width)``.
+    shifts : np.ndarray
+        Array of shape ``(n_copies, 2)`` containing the vertical and horizontal 
+        shifts in pixels for each copy.
+    interpolation_order : int, optional
+        Spline interpolation order passed to ``scipy.ndimage.shift``, by default 3.
 
     Returns
     -------
     np.ndarray
-        Array of shape ``(n_copies, height, width)`` containing the shifted
-        images.
+        Array of shape ``(n_copies, height, width)`` containing the shifted images.
     """
+    if shifts.ndim != 2 or shifts.shape[1] != 2:
+        raise ValueError(f"Expected a shifts array of shape (n, 2), got {shifts.shape}")
+
+    n_copies = len(shifts)
     output = np.empty(shape=(n_copies, *image.shape), dtype=image.dtype)
 
     # Spline interpolation of order > 1 requires prefiltering. Since all
@@ -199,11 +179,6 @@ def generate_shifted_copies(
         )
     else:
         shift_input = image
-
-    # Pre-generate all random shifts for slight efficiency gain
-    shift_magnitudes = rng.uniform(min_shift, max_shift, size=(n_copies, 2))
-    shift_signs = rng.choice((-1.0, 1.0), size=(n_copies, 2))
-    shifts = shift_magnitudes * shift_signs
 
     for i, shift in enumerate(shifts):
         scipy.ndimage.shift(
@@ -220,7 +195,7 @@ def generate_shifted_copies(
 
 
 def load_misclassified_images(
-    image_path: str, n_copies: int, rng: np.random.Generator
+    image_path: Path, n_copies: int, rng: np.random.Generator
 ) -> np.ndarray:
     """Loads a file of outlier images and samples the requested number."""
     images = mrcfile.read(image_path)
@@ -241,127 +216,111 @@ def load_misclassified_images(
 
 
 def create_evaluation_dataset(
-    cfg: dict,
+    dataset_cfg: DatasetConfig,
+    io_cfg: IOConfig,
     rng: np.random.Generator,
     snr: float,
     standardize_before_noise: bool = False,
-    per_image_noise_std: bool = False,
-    rotate_misclassified: bool = True,
-    standardize_reference: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Generates an evaluation dataset with rotated inliers, rotated outliers,
     misclassified outliers, and applies Gaussian noise.
     """
-    data_cfg = cfg["data"]
-    gen_cfg = cfg["generation"]
-
     # Load Reference
-    ref_image = mrcfile.read(data_cfg["reference_image_path"])
-    h, w = ref_image.shape
+    reference = mrcfile.read(io_cfg.reference_path)
+    ref_std = reference.std()
 
-    n_good = gen_cfg["n_copies"]
-    n_rot_bad = gen_cfg.get("n_copies_rotated", 0)
-    n_misc = gen_cfg.get("n_misclassified", 0)
-    n_noise = gen_cfg.get("n_noise", 0)
-    n_shifted = gen_cfg.get("n_shifted", 0)
-    total_copies = n_good + n_rot_bad + n_misc + n_noise + n_shifted
+    if dataset_cfg.standardize_reference:
+        reference /= ref_std
 
-    # Pre-allocate the dataset array
-    dataset = np.empty((total_copies, h, w), dtype=ref_image.dtype)
-
-    # labels array: 0 for inliers, 1 for rotated outliers, 2 for misclassified outliers
-    labels = np.zeros(total_copies, dtype=int)
+    # Pre-allocate the dataset arrays
+    total_copies = dataset_cfg.total_copies
+    dataset = np.empty((total_copies, *reference.shape), dtype=reference.dtype)
+    labels = np.zeros(total_copies, dtype=np.min_scalar_type(MAX_LABELS))
 
     current_idx = 0
 
-    # Fill "good" copies
-    if n_good > 0:
-        dataset[current_idx : current_idx + n_good] = generate_rotated_copies(
-            ref_image,
-            n_good,
-            min_angle=-gen_cfg["max_rotation_reference"],
-            max_angle=gen_cfg["max_rotation_reference"],
-            rng=rng,
-        )
-        labels[current_idx : current_idx + n_good] = 0
-        current_idx += n_good
+    def add_block(data: np.ndarray | float, count: int, label: int) -> None:
+        nonlocal current_idx
+        end_idx = current_idx + count
+        dataset[current_idx:end_idx] = data
+        labels[current_idx:end_idx] = label
+        current_idx = end_idx
 
-    # Fill "very rotated" outliers
-    if n_rot_bad > 0:
-        dataset[current_idx : current_idx + n_rot_bad] = generate_rotated_copies(
-            ref_image,
-            n_rot_bad,
-            min_angle=gen_cfg["min_rotation_very_rotated"],
-            max_angle=gen_cfg["max_rotation_very_rotated"],
-            rng=rng,
-        )
-        labels[current_idx : current_idx + n_rot_bad] = 1
-        current_idx += n_rot_bad
+    if dataset_cfg.n_copies > 0:
+        max_angle = dataset_cfg.max_rotation_inliers
+        if max_angle is None:
+            add_block(reference, dataset_cfg.n_copies, label=0)
+        else:
+            angles = rng.uniform(0.0, max_angle, size=dataset_cfg.n_copies)
+            add_block(
+                generate_rotated_copies(reference, angles),
+                dataset_cfg.n_copies,
+                label=LABELS["good"],
+            )
 
-    # Fill misclassified images
-    if n_misc > 0:
+    if dataset_cfg.n_rotated > 0:
+        min_angle = dataset_cfg.min_rotation_outliers
+        max_angle = dataset_cfg.max_rotation_outliers
+        assert min_angle is not None and max_angle is not None
+        angles = rng.uniform(min_angle, max_angle, size=dataset_cfg.n_rotated)
+
+        add_block(
+            generate_rotated_copies(reference, angles),
+            dataset_cfg.n_rotated,
+            label=LABELS["rotated"],
+        )
+
+    if dataset_cfg.n_shifted > 0:
+        min_shift = dataset_cfg.min_shift_outliers
+        max_shift = dataset_cfg.max_shift_outliers
+        assert (min_shift is not None) and (max_shift is not None)
+
+        magnitudes = rng.uniform(min_shift, max_shift, size=(dataset_cfg.n_shifted, 2))
+        signs = rng.choice((-1.0, 1.0), size=(dataset_cfg.n_shifted, 2))
+        shifts = magnitudes * signs
+        add_block(
+            generate_shifted_copies(reference, shifts),
+            dataset_cfg.n_shifted,
+            label=LABELS["shifted"],
+        )
+
+    if dataset_cfg.n_misclassified > 0:
+        assert io_cfg.misclassified_path is not None
+
         misclassified_images = load_misclassified_images(
-            data_cfg["misclassified_path"], n_misc, rng=rng
+            io_cfg.misclassified_path, dataset_cfg.n_misclassified, rng=rng
         )
-        if rotate_misclassified:
-            min_angle = gen_cfg.get(
-                "min_rotation_misclassified", gen_cfg["min_rotation_very_rotated"]
-            )
-            max_angle = gen_cfg.get(
-                "max_rotation_misclassified", gen_cfg["max_rotation_very_rotated"]
-            )
 
+        min_angle = dataset_cfg.min_rotation_misclassified
+        max_angle = dataset_cfg.max_rotation_misclassified
+        if min_angle is not None and max_angle is not None:
+            angles = rng.uniform(min_angle, max_angle, size=dataset_cfg.n_misclassified)
             misclassified_images = apply_random_rotations(
-                images=misclassified_images,
-                min_angle=min_angle,
-                max_angle=max_angle,
-                rng=rng,
-                output_images=misclassified_images,
+                misclassified_images, angles, output_images=misclassified_images
             )
-        dataset[current_idx : current_idx + n_misc] = misclassified_images
-        labels[current_idx : current_idx + n_misc] = 2
-        current_idx += n_misc
 
-    # Standardize images with respect to the reference (before adding noise, and before adding "pure noise" images)
-    if standardize_reference:
-        ref_std = ref_image.std()
-        ref_image /= ref_std
-        dataset /= ref_std
+        # Misclassified images should be standardized in the same way as the reference
+        if dataset_cfg.standardize_reference:
+            misclassified_images /= ref_std
+
+        add_block(
+            misclassified_images,
+            dataset_cfg.n_misclassified,
+            label=LABELS["misclassified"],
+        )
 
     # Add images with no signal (all zeros, noise will be added later)
-    if n_noise > 0:
-        dataset[current_idx : current_idx + n_noise] = 0.0
-        labels[current_idx : current_idx + n_noise] = 3
-        current_idx += n_noise
-
-    if n_shifted > 0:
-        min_shift: float | None = gen_cfg.get("min_shift")
-        max_shift: float | None = gen_cfg.get("max_shift")
-
-        if min_shift is None or max_shift is None:
-            raise ValueError(
-                "Requested shifted images but did not provide min and max shifts in the config"
-            )
-
-        dataset[current_idx : current_idx + n_shifted] = generate_shifted_copies(
-            ref_image,
-            n_shifted,
-            min_shift=min_shift,
-            max_shift=max_shift,
-            rng=rng,
-            interpolation_order=3,
-        )
-        labels[current_idx : current_idx + n_shifted] = 4
-        current_idx += n_shifted
+    if dataset_cfg.n_noise > 0:
+        add_block(0.0, dataset_cfg.n_noise, label=LABELS["noise"])
 
     # If requested, standardize images before adding noise
     if standardize_before_noise:
         # Standardize ground truth
-        ref_image = (ref_image - ref_image.mean()) / ref_image.std()
+        reference = (reference - reference.mean()) / reference.std()
 
         # Standardize generated images (only those with signal)
-        signal_mask = labels != 3
+        signal_mask = labels != LABELS["noise"]
         if np.any(signal_mask):
             sub_dataset = dataset[signal_mask]
             means = sub_dataset.mean(axis=(1, 2), keepdims=True)
@@ -372,12 +331,6 @@ def create_evaluation_dataset(
             dataset[signal_mask] = (sub_dataset - means) / stds
 
     # Add noise to the array
-    final_dataset = add_noise(
-        dataset,
-        rng=rng,
-        signal_var=ref_image.var(),
-        snr=snr,
-        per_image_noise_std=per_image_noise_std,
-    )
+    final_dataset = add_noise(dataset, rng=rng, signal_var=reference.var(), snr=snr)
 
-    return final_dataset, ref_image, labels
+    return final_dataset, reference, labels
