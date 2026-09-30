@@ -1,5 +1,17 @@
 import argparse
 from pathlib import Path
+import yaml
+from typing import get_args
+
+from .configs import (
+    IOConfig,
+    DatasetConfig,
+    PreprocessingConfig,
+    StandardizeOption,
+    InitializationStrategy,
+    SimulationConfig,
+    EstimatorConfig,
+)
 
 
 def build_base_parser() -> argparse.ArgumentParser:
@@ -16,22 +28,10 @@ def build_base_parser() -> argparse.ArgumentParser:
 
     # Saving
     parser.add_argument(
-        "--save-images",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Save ground truth, outliers, and estimates in .mrc files",
-    )
-    parser.add_argument(
-        "--save-labels",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Save the array of labels for each image.",
-    )
-    parser.add_argument(
-        "--save-weights",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Save the weights that each estimator produced",
+        "--results",
+        type=Path,
+        required=True,
+        help="Path to the directory where the results should be saved",
     )
 
     return parser
@@ -47,14 +47,14 @@ def build_simulation_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--initialization-strategy",
         type=str,
-        choices=["average", "median", "average-good", "ground-truth"],
+        choices=get_args(InitializationStrategy),
         help=(
             "Initialization to use for the estimators that take an initial reference. "
-            "'average' means taking the average of all the input images. "
+            "'mean' means taking the average of all the input images. "
             "'median' means taking the median of all input images. "
-            "'average-good' means taking the average of only the good input images. "
+            "'mean-good' means taking the average of only the good input images. "
             "'ground-truth' means using the ground truth image as the initial reference. "
-            "'average-good' and 'ground-truth' exist for testing purposes, but "
+            "'mean-good' and 'ground-truth' exist for testing purposes, but "
             "are clearly not realistic."
         ),
     )
@@ -72,8 +72,8 @@ def build_simulation_parser() -> argparse.ArgumentParser:
 
     simulation_group.add_argument(
         "--standardize",
-        choices=["before", "after", "both", "none"],
-        default="after",
+        choices=get_args(StandardizeOption),
+        default="none",
         help="When to standardize generated images. Default is %(default)s",
     )
     simulation_group.add_argument(
@@ -107,4 +107,47 @@ def build_simulation_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# TODO: parse into nice config objects
+def parse_simulation_args(args: argparse.Namespace):
+    config_path = Path(args.config)
+    with open(config_path, "r") as file:
+        cfg = yaml.safe_load(file)
+
+    reference_path = args.reference_image_path or cfg["data"]["reference_image_path"]
+    misclassified_path = args.misclassified_path or cfg["data"]["misclassified_path"]
+
+    io_cfg = IOConfig(
+        reference_path=Path(reference_path),
+        misclassified_path=Path(misclassified_path),
+        base_results_path=Path(args.results),
+    )
+
+    preprocessing_cfg = PreprocessingConfig(
+        mask_radius=cfg["mask"].get("radius"),
+        standardize=args.standardize,
+    )
+
+    dataset_cfg = DatasetConfig(
+        standardize_reference=args.standardize_reference, **cfg["generation"]
+    )
+
+    estimator_cfgs: list[EstimatorConfig] = []
+    for method_cfg in cfg["experiment"]["methods"]:
+        estimator_cfgs.append(
+            EstimatorConfig(
+                name=method_cfg["name"],
+                estimator_type=method_cfg["type"],
+                params=method_cfg["params"],
+            )
+        )
+
+    sim_cfg = SimulationConfig(
+        snrs=args.snr,
+        n_runs=args.n_runs,
+        dataset=dataset_cfg,
+        initialization_strategy=args.initialization_strategy,
+        io=io_cfg,
+        preprocessing=preprocessing_cfg,
+        estimators=estimator_cfgs,
+    )
+
+    return sim_cfg
