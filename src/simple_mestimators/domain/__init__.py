@@ -1,2 +1,2 @@
 from .data import ImageBatch, ImageSpace
-from .results import EstimatorResult
+from .results import GMMDiagnostics, EstimatorResult
