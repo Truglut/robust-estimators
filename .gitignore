@@ -1,5 +1,7 @@
 .vscode
 configs
+bash_scripts
+results
 
 # Python-generated files
 __pycache__/
