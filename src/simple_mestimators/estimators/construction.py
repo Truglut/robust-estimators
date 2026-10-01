@@ -89,10 +89,16 @@ def _build_recursive_gmm(
 
 
 def _build_admm(params: dict, image_batch: ImageBatch) -> ADMMEstimator:
-    irls_real = _build_m_estimator(params["real_estimator"], image_batch, space="real")
-    irls_fourier = _build_joint_fourier(
-        params.get("fourier_estimator", params["real_estimator"]), image_batch
-    )
+    real_params = params["real_estimator"]
+    if "params" in real_params:
+        real_params = real_params["params"]
+
+    fourier_params = params["fourier_estimator"]
+    if "params" in fourier_params:
+        fourier_params = fourier_params["params"]
+
+    irls_real = _build_m_estimator(real_params, image_batch, space="real")
+    irls_fourier = _build_joint_fourier(fourier_params, image_batch)
 
     return ADMMEstimator(
         irls_real=irls_real,

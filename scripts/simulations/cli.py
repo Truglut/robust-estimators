@@ -55,6 +55,7 @@ def build_simulation_parser() -> argparse.ArgumentParser:
         "--initialization-strategy",
         type=str,
         choices=get_args(InitializationStrategy),
+        default="mean",
         help=(
             "Initialization to use for the estimators that take an initial reference. "
             "'mean' means taking the average of all the input images. "
@@ -128,8 +129,10 @@ def parse_simulation_cfg(args: argparse.Namespace):
         save_labels=args.save_labels,
     )
 
+    mask_cfg = cfg.get("mask")
+    radius = None if mask_cfg is None else mask_cfg.get("radius")
     preprocessing_cfg = PreprocessingConfig(
-        mask_radius=cfg["mask"].get("radius"),
+        mask_radius=radius,
         standardize=args.standardize,
     )
 
