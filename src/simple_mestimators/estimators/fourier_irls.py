@@ -41,6 +41,10 @@ class JointIRLSFourier(Estimator):
         """All inputs are assumed to be Fourier-space appropriate"""
         mask = self.mask if mask is None else mask
 
+        full_variance = image_variance
+        full_ctf = ctf
+        full_prior_mean = prior_mean
+        full_prior_variance = prior_variance
         images_masked = fourier_images
         if mask is not None:
             images_masked = fourier_images[:, mask]
@@ -87,10 +91,10 @@ class JointIRLSFourier(Estimator):
             estimate = IRLSSolver.calculate_update(
                 images=fourier_images,
                 weights=weights_update,
-                ctf=ctf,
-                prior_mean=prior_mean,
-                prior_variance=prior_variance,
-                image_variance=image_variance,
+                ctf=full_ctf,
+                prior_mean=full_prior_mean,
+                prior_variance=full_prior_variance,
+                image_variance=full_variance,
                 eps=self.eps,
             )
 
@@ -108,21 +112,36 @@ class JointIRLSFourier(Estimator):
     ) -> EstimatorResult:
         fourier_images = images.ensure_fourier()
         image_variance = images.fourier_modulus_variance()
+        mask = self.mask if mask is None else mask
+        if reference is not None and not np.iscomplexobj(reference):
+            reference = np.fft.rfft2(reference, norm=images.norm)
+        if prior_mean is not None and not np.iscomplexobj(prior_mean):
+            prior_mean = np.fft.rfft2(prior_mean, norm=images.norm)
 
         fourier_estimate, weights = self.solve(
-            fourier_images=images.ensure_fourier(),
+            fourier_images=fourier_images,
             image_variance=image_variance,
+            ctf=images.ctf,
             reference=reference,
             prior_mean=prior_mean,
             prior_variance=prior_variance,
+            max_iter_override=max_iter_override,
             mask=mask,
         )
 
-        if self.weight_approach == "per-pixel" and mask is not None:
-            spatial_weights = np.empty_like(fourier_images, dtype=np.float64)
-            spatial_weights[:, mask] = weights
-            spatial_weights[:, ~mask] = np.nan
-            weights = spatial_weights
+        if mask is not None:
+            if weights.shape[1:] == (1,):
+                # Masking flattens the Fourier grid for the solve. Restore the
+                # broadcast dimensions for per-image and zero-iteration weights.
+                weights = weights.reshape((fourier_images.shape[0], 1, 1))
+            else:
+                # Keep selected coefficient weights in their original positions.
+                # NaN denotes coefficients that were not used to obtain weights.
+                full_weights = np.full(
+                    fourier_images.shape, np.nan, dtype=weights.dtype
+                )
+                full_weights[:, mask] = weights
+                weights = full_weights
 
         return EstimatorResult(
             real_estimate=np.fft.irfft2(
