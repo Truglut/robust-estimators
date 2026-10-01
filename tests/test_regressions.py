@@ -19,11 +19,6 @@ from scripts.simulations.cli import build_simulation_parser, parse_simulation_cf
 from conftest import unit_weights
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=(KeyError, TypeError),
-    reason="CLI indexes/converts optional misclassified_path unconditionally",
-)
 @pytest.mark.parametrize("omit", [False, True], ids=["null-path", "missing-path"])
 def test_cli_accepts_no_misclassified_file_when_none_requested(tmp_path, omit):
     data = {"reference_image_path": "ref.mrc", "misclassified_path": None}

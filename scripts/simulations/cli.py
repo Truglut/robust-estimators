@@ -118,11 +118,16 @@ def parse_simulation_cfg(args: argparse.Namespace):
         cfg = yaml.safe_load(file)
 
     reference_path = args.reference_image_path or cfg["data"]["reference_image_path"]
-    misclassified_path = args.misclassified_path or cfg["data"]["misclassified_path"]
+    
+    misclassified_path = None
+    if args.misclassified_path is not None:
+        misclassified_path = Path(args.misclassified_path)
+    elif (m_path := cfg["data"].get("misclassified_path")) is not None:
+        misclassified_path = Path(m_path)
 
     io_cfg = IOConfig(
         reference_path=Path(reference_path),
-        misclassified_path=Path(misclassified_path),
+        misclassified_path=misclassified_path,
         base_results_path=Path(args.results),
         save_weights=args.save_weights,
         save_estimates=args.save_estimates,
