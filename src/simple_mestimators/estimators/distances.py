@@ -51,7 +51,7 @@ def mean_l2_norm(
 
     spatial_axes = tuple(range(1, images.ndim))
 
-    return np.sqrt(np.square(residuals).mean(axis=spatial_axes))
+    return np.sqrt(np.square(np.abs(residuals)).mean(axis=spatial_axes))
 
 
 def tagare_distance(
@@ -95,13 +95,13 @@ def get_distance_function(
     params : dict | tuple
         Hyperparameters passed down to the base function. If a tuple of pairs is given,
         it is transformed into a dictionary seamlessly.
-    imgs : torch.Tensor | None, optional
+    imgs : np.ndarray | None, optional
         A collection of images tensor used exclusively for calculating automated beta scaling
         parameter if params configures it to "auto", by default None.
 
     Returns
     -------
-    Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+    Callable[[np.ndarray, np.ndarray], np.ndarray]
         A standard configured partial function expecting `(images, reference)` arguments.
 
     Raises

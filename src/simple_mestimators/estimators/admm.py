@@ -9,7 +9,7 @@ from .irls import IRLSSolver
 from .fourier_irls import JointIRLSFourier
 from .base import Estimator
 
-from simple_mestimators.domain import EstimatorResult, ImageBatch, ImageSpace
+from simple_mestimators.domain import EstimatorResult, ImageBatch
 
 
 class ImageData(NamedTuple):

@@ -78,17 +78,21 @@ def _build_recursive_gmm(
         params=params.get("distance_params", {}),
         imgs=image_batch.select_space(space),
     )
-    return RecursiveGMMEstimator(
-        distance_function=distance_func,
-        random_state=params.get("random_state", None),
-        max_iter=params.get("max_iter", 10),
-        tol=params.get("tol", 1e-3),
-    )
+    solver_params = {
+        key: value
+        for key, value in params.items()
+        if key not in ("distance_function", "distance_params")
+    }
+    solver_params.setdefault("max_iter", 10)
+    solver_params.setdefault("tol", 1e-3)
+    return RecursiveGMMEstimator(distance_function=distance_func, **solver_params)
 
 
 def _build_admm(params: dict, image_batch: ImageBatch) -> ADMMEstimator:
     irls_real = _build_m_estimator(params["real_estimator"], image_batch, space="real")
-    irls_fourier = _build_joint_fourier(params["real_estimator"], image_batch)
+    irls_fourier = _build_joint_fourier(
+        params.get("fourier_estimator", params["real_estimator"]), image_batch
+    )
 
     return ADMMEstimator(
         irls_real=irls_real,
@@ -104,7 +108,7 @@ def _build_fourier_gmm(params: dict, image_batch: ImageBatch):
         unit="normalized",
     )
     fourier_variance = image_batch.fourier_modulus_variance()[lowpass_mask]
-    std = np.sqrt(fourier_variance)
+    std = np.sqrt(np.clip(fourier_variance, min=1.0e-8))
     delta = params.pop("delta", DEFAULT_FOURIER_GMM_DELTA)
 
     def distance_function(images, reference):
@@ -118,12 +122,9 @@ def _build_fourier_gmm(params: dict, image_batch: ImageBatch):
         # dims = tuple(range(1, residuals.ndim))
         # return torch.linalg.vector_norm(residuals[:, lowpass_mask], ord=1, dim=dims)
 
-    solver = RecursiveGMMEstimator(
-        distance_function=distance_function,
-        random_state=params.get("random_state", None),
-        max_iter=params.get("max_iter", 10),
-        tol=params.get("tol", 1e-3),
-    )
+    params.setdefault("max_iter", 10)
+    params.setdefault("tol", 1e-3)
+    solver = RecursiveGMMEstimator(distance_function=distance_function, **params)
 
     return FourierGMM(solver=solver)
 
