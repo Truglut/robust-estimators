@@ -125,9 +125,8 @@ class JointIRLSFourier(Estimator):
             weights = spatial_weights
 
         return EstimatorResult(
-            real_estimate=np.fft.irfft2(fourier_estimate),
-            weights={
-                "real": None,
-                "fourier": weights
-            }
+            real_estimate=np.fft.irfft2(
+                fourier_estimate, s=images.real_shape, norm=images.norm
+            ),
+            weights={"real": None, "fourier": weights},
         )

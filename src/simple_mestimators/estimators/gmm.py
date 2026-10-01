@@ -310,7 +310,9 @@ class FourierGMM(Estimator):
         fourier_estimate, weights, diagnostics = self.solver.solve(
             fourier_images, reference
         )
-        estimate = np.fft.irfft2(fourier_estimate, norm=images.norm)
+        estimate = np.fft.irfft2(
+            fourier_estimate, s=images.real_shape, norm=images.norm
+        )
 
         return EstimatorResult(
             real_estimate=estimate,
