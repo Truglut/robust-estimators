@@ -35,8 +35,7 @@ class RecursiveGMMEstimator(Estimator):
     Recursive robust averaging with peak-corrected GMM responsibilities.
 
     Unusable iterations stop the recursion and return the ordinary image mean
-    with unit weights. ``fallback_reason`` records why this happened; it is
-    ``None`` after a successful fit. GMM parameters in the diagnostics are NaN
+    with unit weights. GMM parameters in the diagnostics are NaN
     when the final attempted iteration did not produce a valid model.
 
     The good component has the lower mean distance. By default, reject models
@@ -89,7 +88,6 @@ class RecursiveGMMEstimator(Estimator):
 
         self.n_its = None
         self.converged = False
-        self.fallback_reason: str | None = None
 
     def _new_model(self) -> GaussianMixture:
         """Create a fresh GMM, resetting any state from previous ``fit`` calls."""
