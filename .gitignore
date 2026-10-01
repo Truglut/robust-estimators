@@ -2,6 +2,7 @@
 configs
 bash_scripts
 results
+scratch
 
 # Python-generated files
 __pycache__/
