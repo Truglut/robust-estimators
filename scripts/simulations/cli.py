@@ -34,6 +34,13 @@ def build_base_parser() -> argparse.ArgumentParser:
         help="Path to the directory where the results should be saved",
     )
 
+    for flag in ("weights", "estimates", "labels"):
+        parser.add_argument(
+            f"--save-{flag}",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help=f"Save {flag} (default: %(default)s)",
+        )
     return parser
 
 
@@ -60,6 +67,9 @@ def build_simulation_parser() -> argparse.ArgumentParser:
     )
 
     simulation_group = parser.add_argument_group("Simulation")
+    simulation_group.add_argument(
+        "--seed", type=int, default=42, help="Simulation seed (default: %(default)s)"
+    )
 
     # Simulation
     simulation_group.add_argument(
@@ -75,12 +85,6 @@ def build_simulation_parser() -> argparse.ArgumentParser:
         choices=get_args(StandardizeOption),
         default="none",
         help="When to standardize generated images. Default is %(default)s",
-    )
-    simulation_group.add_argument(
-        "--per-image-noise-std",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="Add a different noise std to each image to achieve a uniform SNR. Default is False",
     )
     simulation_group.add_argument(
         "--n-runs",
@@ -102,12 +106,12 @@ def build_simulation_parser() -> argparse.ArgumentParser:
         "--standardize-reference",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="If True, the reference image will be standardized to zero mean and unit std before generating the dataset",
+        help="If True, the reference image will be standardized to unit std before generating the dataset",
     )
     return parser
 
 
-def parse_simulation_args(args: argparse.Namespace):
+def parse_simulation_cfg(args: argparse.Namespace):
     config_path = Path(args.config)
     with open(config_path, "r") as file:
         cfg = yaml.safe_load(file)
@@ -119,6 +123,9 @@ def parse_simulation_args(args: argparse.Namespace):
         reference_path=Path(reference_path),
         misclassified_path=Path(misclassified_path),
         base_results_path=Path(args.results),
+        save_weights=args.save_weights,
+        save_estimates=args.save_estimates,
+        save_labels=args.save_labels,
     )
 
     preprocessing_cfg = PreprocessingConfig(
@@ -148,6 +155,7 @@ def parse_simulation_args(args: argparse.Namespace):
         io=io_cfg,
         preprocessing=preprocessing_cfg,
         estimators=estimator_cfgs,
+        seed=args.seed,
     )
 
     return sim_cfg

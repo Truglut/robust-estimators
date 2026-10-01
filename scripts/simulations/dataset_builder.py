@@ -1,11 +1,10 @@
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import mrcfile
 import scipy
 
-from .configs import DatasetConfig, IOConfig
+from .configs import DatasetConfig
 
 LABELS = {
     "good": 0,
@@ -35,7 +34,7 @@ def add_noise(
     snr : float
         Target Signal-to-Noise Ratio.
     signal_var : float | None, optional
-        Pre-calculated variance of the signal. If None, the variance is 
+        Pre-calculated variance of the signal. If None, the variance is
         estimated from the input images, by default None.
 
     Returns
@@ -43,6 +42,9 @@ def add_noise(
     np.ndarray
         Images with added Gaussian noise, same shape as input.
     """
+    if not np.isfinite(snr) or snr <= 0:
+        raise ValueError("snr must be finite and positive")
+
     if signal_var is None:
         signal_var = float(images.var(axis=(-2, -1)).mean())
 
@@ -152,7 +154,7 @@ def generate_shifted_copies(
     image : np.ndarray
         Input 2D reference image of shape ``(height, width)``.
     shifts : np.ndarray
-        Array of shape ``(n_copies, 2)`` containing the vertical and horizontal 
+        Array of shape ``(n_copies, 2)`` containing the vertical and horizontal
         shifts in pixels for each copy.
     interpolation_order : int, optional
         Spline interpolation order passed to ``scipy.ndimage.shift``, by default 3.
@@ -215,21 +217,52 @@ def load_misclassified_images(
     return images[indices]
 
 
+def get_dataset_labels(dataset_cfg: DatasetConfig):
+    labels = np.zeros(dataset_cfg.total_copies, dtype=np.min_scalar_type(MAX_LABELS))
+    start = 0
+
+    count = dataset_cfg.n_copies
+    labels[start : start + count] = LABELS["good"]
+    start += count
+
+    count = dataset_cfg.n_rotated
+    labels[start : start + count] = LABELS["rotated"]
+    start += count
+
+    count = dataset_cfg.n_shifted
+    labels[start : start + count] = LABELS["shifted"]
+    start += count
+
+    count = dataset_cfg.n_misclassified
+    labels[start : start + count] = LABELS["misclassified"]
+    start += count
+
+    count = dataset_cfg.n_noise
+    labels[start : start + count] = LABELS["noise"]
+    start += count
+
+    return labels
+
+
 def create_evaluation_dataset(
+    reference: np.ndarray,
     dataset_cfg: DatasetConfig,
-    io_cfg: IOConfig,
     rng: np.random.Generator,
     snr: float,
+    misclassified_path: Path | None = None,
     standardize_before_noise: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Generates an evaluation dataset with rotated inliers, rotated outliers,
     misclassified outliers, and applies Gaussian noise.
     """
-    # Load Reference
-    reference = mrcfile.read(io_cfg.reference_path)
-    ref_std = reference.std()
+    reference = np.array(reference, copy=True)
+    if not np.isfinite(reference).all():
+        raise ValueError("'reference' contains non-finite values.")
+    if reference.ndim != 2:
+        raise ValueError("Expected a 2D reference image.")
 
+    ref_std = reference.std()
     if dataset_cfg.standardize_reference:
         reference /= ref_std
 
@@ -286,10 +319,10 @@ def create_evaluation_dataset(
         )
 
     if dataset_cfg.n_misclassified > 0:
-        assert io_cfg.misclassified_path is not None
+        assert misclassified_path is not None
 
         misclassified_images = load_misclassified_images(
-            io_cfg.misclassified_path, dataset_cfg.n_misclassified, rng=rng
+            misclassified_path, dataset_cfg.n_misclassified, rng=rng
         )
 
         min_angle = dataset_cfg.min_rotation_misclassified
