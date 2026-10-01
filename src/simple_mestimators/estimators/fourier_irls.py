@@ -62,7 +62,7 @@ class JointIRLSFourier(Estimator):
                 prior_variance = prior_variance[mask]
 
             if ctf is not None:
-                ctf = ctf[:, mask]
+                ctf = np.broadcast_to(ctf, fourier_images.shape)[:, mask]
 
         estimate, weights = self.solver.solve(
             images=images_masked,

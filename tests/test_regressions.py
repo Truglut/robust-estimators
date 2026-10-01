@@ -50,11 +50,6 @@ def test_cli_accepts_no_misclassified_file_when_none_requested(tmp_path, omit):
     assert cfg.io.misclassified_path is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=IndexError,
-    reason="Mask indexing precedes CTF broadcasting in JointIRLSFourier.solve",
-)
 @pytest.mark.parametrize("ctf_shape", ["frequency-grid", "per-image"])
 def test_masked_fourier_accepts_broadcastable_ctf(ctf_shape):
     images = np.random.default_rng(1).normal(size=(4, 3, 5))
