@@ -188,7 +188,7 @@ class RecursiveGMMEstimator(Estimator):
         diagnostics : GMMDiagnostics
         """
         distances = self.distance_function(images, reference)
-        if np.iscomplex(distances) or distances.size != images.shape[0]:
+        if np.iscomplexobj(distances) or distances.size != images.shape[0]:
             raise ValueError(
                 "The distance function must return one real distance per image"
             )
@@ -277,7 +277,7 @@ class RecursiveGMMEstimator(Estimator):
         return reference, weights, diagnostics
 
     def fit(
-        self, images: ImageBatch, reference: np.ndarray | None = None
+        self, images: ImageBatch, *, reference: np.ndarray | None = None
     ) -> EstimatorResult:
         """Fit the recursive estimator and return its result."""
         estimate, weights, diagnostics = self.solve(images.real, reference)
@@ -304,7 +304,7 @@ class FourierGMM(Estimator):
         fourier_images = images.ensure_fourier()
         if reference is None:
             reference = fourier_images.mean(axis=0)
-        elif not np.iscomplex(reference):
+        elif not np.iscomplexobj(reference):
             reference = np.fft.rfft2(reference, norm=images.norm)
 
         fourier_estimate, weights, diagnostics = self.solver.solve(
