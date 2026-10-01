@@ -16,9 +16,6 @@ TAGARE_CONSTANT: float = 1.0e-5
 WeightFunction = Callable[[np.ndarray, np.ndarray, np.ndarray | float], np.ndarray]
 
 
-import numpy as np
-
-
 def weighted_average(
     images: np.ndarray, weights: np.ndarray, axis: int = 0, eps: float = 1.0e-6
 ) -> np.ndarray:
@@ -167,13 +164,13 @@ def tagare_weights(
     image_norms = np.linalg.vector_norm(images_flat, axis=1)
     reference_norm = np.linalg.vector_norm(reference_flat)
 
-    dot_products = images_flat @ reference_flat
+    dot_products = images_flat @ reference_flat.conj()
 
     cos = dot_products / (image_norms * reference_norm).clip(min=eps)
     cos_abs = np.abs(cos)
 
     image_norm_sq = np.square(image_norms)
-    orth_norm_sq = image_norm_sq * (1.0 - np.square(cos_abs))
+    orth_norm_sq = np.maximum(image_norm_sq * (1.0 - np.square(cos_abs)), 0.0)
 
     weights = cos_abs * np.exp(-beta * orth_norm_sq)
 
@@ -291,4 +288,6 @@ def calculate_beta_auto(imgs: np.ndarray, mult: float = 1.0) -> float:
     float
         The calculated floating-point automatic beta scaling parameter.
     """
-    return mult * TAGARE_CONSTANT / imgs.var(axis=(1, 2)).mean()
+    axes = tuple(range(1, imgs.ndim))
+    variance = float(imgs.var(axis=axes).mean())
+    return mult * TAGARE_CONSTANT / max(variance, 1.0e-8)
