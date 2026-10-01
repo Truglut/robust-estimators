@@ -107,7 +107,7 @@ def _build_fourier_gmm(params: dict, image_batch: ImageBatch):
         cutoff=LOWPASS_NORMALIZED_CUTOFF,
         unit="normalized",
     )
-    fourier_variance = image_batch.fourier_modulus_variance()[lowpass_mask]
+    fourier_variance = image_batch.fourier_residual_variance()[lowpass_mask]
     std = np.sqrt(np.clip(fourier_variance, min=1.0e-8))
     delta = params.pop("delta", DEFAULT_FOURIER_GMM_DELTA)
 

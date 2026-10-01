@@ -260,7 +260,7 @@ class ADMMEstimator(Estimator):
         """Prepare real- and Fourier-space image data for ADMM estimation."""
         # We have already validated images.norm == "ortho"
         fourier_images = images.ensure_fourier()
-        image_variance_fourier = images.fourier_modulus_variance().clip(min=1.0e-8)
+        image_variance_fourier = images.fourier_residual_variance().clip(min=1.0e-8)
         image_std_fourier = np.sqrt(image_variance_fourier)
 
         image_variance_real = images.real_variance().clip(min=1.0e-8)

@@ -111,7 +111,7 @@ class JointIRLSFourier(Estimator):
         mask: np.ndarray | None = None,
     ) -> EstimatorResult:
         fourier_images = images.ensure_fourier()
-        image_variance = images.fourier_modulus_variance()
+        image_variance = images.fourier_residual_variance()
         mask = self.mask if mask is None else mask
         if reference is not None and not np.iscomplexobj(reference):
             reference = np.fft.rfft2(reference, norm=images.norm)
