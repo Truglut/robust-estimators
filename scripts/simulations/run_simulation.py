@@ -169,8 +169,34 @@ def run_simulation(cfg: SimulationConfig) -> Path:
             elif not np.array_equal(dataset.labels, labels):
                 raise RuntimeError("Dataset label order changed between runs")
 
-            for name, result in run_experiment(dataset, cfg.estimators, cfg.initialization_strategy):
-                directory = (root / "estimators" / name / snr_directory(snr) / f"run_{run_index:03d}")
+            # Save the sample mean for this run
+            unitary_weights = np.ones(
+                dataset.preprocessed_images.shape[0],
+                dtype=dataset.preprocessed_images.dtype,
+            )
+            mean_result = EstimatorResult(
+                real_estimate=dataset.preprocessed_images.mean(axis=0),
+                weights={"real": unitary_weights},
+            )
+            directory = (
+                root
+                / "estimators"
+                / "mean"
+                / snr_directory(snr)
+                / f"run_{run_index:03d}"
+            )
+            save_estimator_result(directory, mean_result, cfg.io, dataset_seed=seed)
+
+            for name, result in run_experiment(
+                dataset, cfg.estimators, cfg.initialization_strategy
+            ):
+                directory = (
+                    root
+                    / "estimators"
+                    / name
+                    / snr_directory(snr)
+                    / f"run_{run_index:03d}"
+                )
                 save_estimator_result(directory, result, cfg.io, dataset_seed=seed)
                 del result
             del dataset
