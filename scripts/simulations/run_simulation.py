@@ -20,6 +20,7 @@ from .output import initialize_output, save_estimator_result, save_json, snr_dir
 from simple_mestimators.masks import create_circular_mask
 from simple_mestimators.domain import ImageBatch, EstimatorResult
 from simple_mestimators.estimators.construction import build_estimator
+from simple_mestimators.estimators.noise_corrected_cosine import NoiseCorrectedCosineEstimator
 
 
 @dataclass
@@ -27,6 +28,7 @@ class PreparedSimulationDataset:
     preprocessed_images: np.ndarray
     labels: np.ndarray
     ground_truth: np.ndarray
+    mask: np.ndarray | None = None
 
 
 def preprocess_images(
@@ -71,6 +73,7 @@ def prepare_simulation_dataset(
         preprocessed_images=preprocess_images(images, preprocessing_cfg, mask),
         labels=labels,
         ground_truth=preprocess_images(dataset_ground_truth, preprocessing_cfg, mask),
+        mask=mask,
     )
 
 
@@ -106,18 +109,38 @@ def run_experiment(
     estimator_cfgs: list[EstimatorConfig],
     initialization_strategy: InitializationStrategy,
 ) -> Iterator[tuple[str, EstimatorResult]]:
-    image_batch = ImageBatch(real=dataset.preprocessed_images)
+    image_batch = ImageBatch(real=dataset.preprocessed_images, mask=dataset.mask)
     initial_reference = prepare_initial_reference(dataset, initialization_strategy)
 
     for cfg in estimator_cfgs:
         estimator = build_estimator(cfg.to_method_cfg(), image_batch=image_batch)
-        yield cfg.name, estimator.fit(image_batch, reference=initial_reference.copy())
+        if isinstance(estimator, NoiseCorrectedCosineEstimator):
+            n = image_batch.n_images
+            if initialization_strategy == "mean":
+                initial_weights = np.full(n, 1.0 / n)
+            elif initialization_strategy == "mean-good":
+                good = dataset.labels == 0
+                initial_weights = good.astype(float) / good.sum()
+            elif initialization_strategy == "ground-truth":
+                initial_weights = None  # Clean, independent reference.
+            else:
+                raise ValueError("Noise-corrected cosine requires mean, mean-good, or ground-truth "
+                                 "initialization; a median's noise covariance is not supported")
+            result = estimator.fit(image_batch, reference=initial_reference.copy(),
+                                   initial_reference_weights=initial_weights)
+        else:
+            result = estimator.fit(image_batch, reference=initial_reference.copy())
+        yield cfg.name, result
 
 
 def effective_config(cfg: SimulationConfig) -> SimulationConfig:
     """Resolve missing GMM random states without modifying the supplied config."""
     methods = deepcopy(cfg.estimators)
     for method in methods:
+        if method.estimator_type == "noise_corrected_cosine" and method.params.get("weighting", "gmm") == "gmm":
+            gmm_params = method.params.setdefault("gmm_params", {})
+            if gmm_params.get("random_state") is None:
+                gmm_params["random_state"] = cfg.seed
         if method.estimator_type in ("recursive_gmm", "fourier_gmm"):
             if method.params.get("random_state") is None:
                 method.params["random_state"] = cfg.seed

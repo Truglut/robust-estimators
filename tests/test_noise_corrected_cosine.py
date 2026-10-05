@@ -126,7 +126,8 @@ def test_simulation_passes_initial_reference_coefficients(strategy):
         list(run_experiment(dataset, [cfg], "median"))
 
 
-def test_gmm_simulation_saves_and_replays_with_seed_and_unchanged_baseline(write_mrc, tmp_path):
+@pytest.mark.parametrize("filtered", [False, True])
+def test_gmm_simulation_saves_and_replays_with_seed_and_unchanged_baseline(write_mrc, tmp_path, filtered):
     y, x = np.mgrid[:17, :19]
     reference = np.exp(-((x-6)**2 + (y-8)**2)/10)
     other = 3*np.exp(-((x-13)**2 + (y-8)**2)/10)
@@ -137,6 +138,8 @@ def test_gmm_simulation_saves_and_replays_with_seed_and_unchanged_baseline(write
         "weighting": "gmm", "max_iter": 2,
         "metric_params": {"min_signal_fraction": 0},
         "gmm_params": {"gmm_max_iter": 100, "check_degenerate_model": False}})
+    if filtered:
+        new.params["metric_params"].update(filter_sigma=1., max_frequency=.3)
     cfg = SimulationConfig(snrs=[1.], n_runs=1, initialization_strategy="mean", seed=43,
         dataset=DatasetConfig(n_copies=60, n_misclassified=20),
         io=IOConfig(write_mrc("ref.mrc", reference), write_mrc("other.mrc", other), tmp_path/"all"),
@@ -145,6 +148,7 @@ def test_gmm_simulation_saves_and_replays_with_seed_and_unchanged_baseline(write
     original = deepcopy(cfg)
     effective = effective_config(cfg)
     assert cfg == original
+
     assert effective.estimators[1].params["gmm_params"]["random_state"] == cfg.seed
     root = run_simulation(cfg)
     replay = run_simulation(replace(cfg, io=replace(cfg.io, base_results_path=tmp_path/"replay"),
@@ -160,3 +164,61 @@ def test_gmm_simulation_saves_and_replays_with_seed_and_unchanged_baseline(write
     saved = json.loads((root/"estimators/corrected_gmm/config.json").read_text())
     assert saved == effective.estimators[1].to_method_cfg()
     assert cfg == original
+
+@pytest.mark.parametrize("width", [7, 8])
+def test_filtered_rfft_matches_full_fft_and_trace_of_dense_operator(width):
+    rng = np.random.default_rng(41)
+    h = 6
+    mask = np.ones((h, width), dtype=bool)
+    mask[0, :2] = False
+    mask[-1, -2:] = False
+    images = rng.normal(size=(11, h, width))
+    a = np.arange(1, 12, dtype=float)
+    a /= a.sum()
+    ref = np.tensordot(a, images, axes=(0, 0))
+    noise = np.linspace(.001, .01, len(images))
+    sigma = .7
+    lower, upper = .1, .45
+    metric = NoiseCorrectedCosineDistance(images, mask=mask, noise_variance=noise,
+        min_signal_fraction=0, filter_sigma=sigma, min_frequency=lower, max_frequency=upper)
+    radius = np.hypot(np.fft.fftfreq(h)[:, None], np.fft.fftfreq(width)[None, :])
+    omega = ((radius >= lower) & (radius <= upper)) * np.exp(-4*np.pi**2*sigma**2*radius**2)
+    def fft_center(batch):
+        centered = np.zeros_like(batch)
+        values = batch[:, mask]
+        centered[:, mask] = values - values.mean(axis=1, keepdims=True)
+        return np.fft.fft2(centered, norm="ortho")
+    xfft, rfft = fft_center(images), fft_center(ref[None])[0]
+    # Apply the full preprocessing to every spatial basis vector; summing the
+    # output energies gives ||L||_F^2 = trace(LL*) without the profile formula.
+    basis_fft = fft_center(np.eye(h*width).reshape(h*width, h, width))
+    trace = np.sum(np.abs(basis_fft)**2 * omega)
+    ex = np.sum(np.abs(xfft)**2 * omega, axis=(1, 2))
+    er = np.sum(np.abs(rfft)**2 * omega)
+    cross = np.sum((xfft*rfft.conj()).real * omega, axis=(1, 2))
+    expected = 1 - (cross-trace*a*noise) / np.sqrt(
+        (ex-trace*noise) * (er-trace*np.dot(a*a, noise)))
+    assert_allclose(metric.trace, trace, atol=1e-14)
+    assert_allclose(metric.image_energy, ex)
+    assert_allclose(metric.distances(ref, reference_weights=a), expected)
+    # A band covering all frequencies reproduces real-space centering exactly.
+    full_band = NoiseCorrectedCosineDistance(images, mask=mask, noise_variance=noise,
+                                            min_signal_fraction=0, max_frequency=1.)
+    real = NoiseCorrectedCosineDistance(images, mask=mask, noise_variance=noise,
+                                       min_signal_fraction=0)
+    assert_allclose(full_band.trace, mask.sum()-1)
+    assert_allclose(full_band.distances(ref, reference_weights=a),
+                    real.distances(ref, reference_weights=a))
+
+
+def test_filter_changes_only_scoring_not_resolution_of_output_average():
+    rng = np.random.default_rng(101)
+    images = rng.normal(size=(18, 15, 17))
+    estimator = NoiseCorrectedCosineEstimator(weighting="cosine", max_iter=1,
+        metric_params={"noise_variance": 0., "filter_sigma": 1.3, "max_frequency": .3})
+    result = estimator.fit(ImageBatch(images))
+    a = result.weights["real"].reshape(-1)
+    a /= a.sum()
+    assert_allclose(result.real_estimate, np.tensordot(a, images, axes=(0, 0)))
+    assert estimator.metric.features.shape[1] < 15*17
+    assert estimator.metric.noise_profile is not None

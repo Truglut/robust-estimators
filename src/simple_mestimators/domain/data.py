@@ -13,6 +13,7 @@ class ImageBatch:
     fourier: np.ndarray | None = None
     ctf: np.ndarray | None = None
     norm: Literal["ortho", "forward", "backward"] = "ortho"
+    mask: np.ndarray | None = None
 
     def __post_init__(self):
         if self.real.ndim != 3:

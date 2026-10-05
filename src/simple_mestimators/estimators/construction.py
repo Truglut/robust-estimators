@@ -10,6 +10,7 @@ from simple_mestimators.estimators.admm import ADMMEstimator
 from simple_mestimators.estimators.irls import IRLSSolver
 from simple_mestimators.estimators.fourier_irls import JointIRLSFourier
 from simple_mestimators.estimators.gmm import RecursiveGMMEstimator, FourierGMM
+from simple_mestimators.estimators.noise_corrected_cosine import NoiseCorrectedCosineEstimator
 
 from simple_mestimators.estimators.distances import get_distance_function
 from simple_mestimators.estimators.weights import (
@@ -29,6 +30,7 @@ EstimatorTypeName = Literal[
     "admm",
     "masked_fourier",
     "fourier_gmm",
+    "noise_corrected_cosine",
 ]
 
 
@@ -136,6 +138,7 @@ def _build_fourier_gmm(params: dict, image_batch: ImageBatch):
 
 
 BUILDER_REGISTRY: dict[EstimatorTypeName, Callable[[dict, ImageBatch], Estimator]] = {
+    "noise_corrected_cosine": lambda params, batch: NoiseCorrectedCosineEstimator(**params),
     "m_estimator": _build_m_estimator,
     "joint_fourier": _build_joint_fourier,
     "masked_fourier": _build_masked_fourier,
