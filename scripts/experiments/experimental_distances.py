@@ -1,5 +1,9 @@
 """Experimental, signed structural distances for real cryo-EM image batches.
 
+Lives in scripts.experiments alongside plot_initial_distances. Pass
+PreparedDataset.preprocessed_images and PreparedDataset.mask for either
+simulated data or stored image stacks; no simulation-specific imports are used.
+
 All metrics return shape (n,) with smaller values meaning greater similarity.
 They accept real spatial images, perform their own full, orthonormal FFTs, and
 do not search over rotations/translations: misalignment should remain visible.
@@ -50,7 +54,9 @@ def _frequency_radius(shape: tuple[int, int]) -> np.ndarray:
 
 
 def _spectral_weights(
-    shape: tuple[int, int], sigma: float, min_frequency: float,
+    shape: tuple[int, int],
+    sigma: float,
+    min_frequency: float,
     max_frequency: float | None,
 ) -> np.ndarray:
     if not np.isfinite(sigma) or sigma < 0:
@@ -66,7 +72,9 @@ def _spectral_weights(
     if max_frequency is not None:
         keep &= radius <= max_frequency
     if not np.any(keep):
-        raise ValueError("The selected frequency range contains no Fourier coefficients")
+        raise ValueError(
+            "The selected frequency range contains no Fourier coefficients"
+        )
     # Squared transfer function of a periodic Gaussian with spatial std sigma.
     return keep * np.exp(-4 * np.pi**2 * sigma**2 * radius**2)
 
@@ -81,12 +89,15 @@ def _noise_power_profile(support: np.ndarray) -> np.ndarray:
     """
     count = float(np.count_nonzero(support))
     spectrum = fft2(support.astype(float), norm="ortho")
-    return np.maximum(count / support.size - np.abs(spectrum)**2 / count, 0.0)
+    return np.maximum(count / support.size - np.abs(spectrum) ** 2 / count, 0.0)
 
 
 def estimate_noise_variance(
-    images: np.ndarray, *, mask: np.ndarray | None = None,
-    pool_noise: bool = False, batch_size: int = 64,
+    images: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
+    pool_noise: bool = False,
+    batch_size: int = 64,
 ) -> np.ndarray:
     """Estimate white-noise variance from the noisy input, before filtering.
 
@@ -113,20 +124,25 @@ def estimate_noise_variance(
     """
     images = np.asarray(images)
     support = _support(images, mask)
-    valid = (support[:-1, :-1] & support[1:, :-1]
-             & support[:-1, 1:] & support[1:, 1:])
+    valid = support[:-1, :-1] & support[1:, :-1] & support[:-1, 1:] & support[1:, 1:]
     if not np.any(valid):
-        raise ValueError("Automatic noise estimation requires at least one valid 2x2 block")
+        raise ValueError(
+            "Automatic noise estimation requires at least one valid 2x2 block"
+        )
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     variances = np.empty(len(images))
     for start in range(0, len(images), batch_size):
-        block = np.asarray(images[start:start + batch_size], dtype=np.float64)
-        difference = (block[:, :-1, :-1] - block[:, 1:, :-1]
-                      - block[:, :-1, 1:] + block[:, 1:, 1:])[:, valid]
+        block = np.asarray(images[start : start + batch_size], dtype=np.float64)
+        difference = (
+            block[:, :-1, :-1]
+            - block[:, 1:, :-1]
+            - block[:, :-1, 1:]
+            + block[:, 1:, 1:]
+        )[:, valid]
         median = np.median(difference, axis=1, keepdims=True)
         mad = np.median(np.abs(difference - median), axis=1)
-        variances[start:start + len(block)] = (mad / (2 * 0.6744897501960817))**2
+        variances[start : start + len(block)] = (mad / (2 * 0.6744897501960817)) ** 2
     if pool_noise:
         variances[:] = np.median(variances)
     if not np.isfinite(variances).all():
@@ -144,8 +160,14 @@ def _resolve_noise(images, mask, noise_variance, pool_noise, batch_size):
     values = np.asarray(noise_variance, dtype=float)
     if values.ndim == 0:
         values = np.full(len(images), float(values))
-    if values.shape != (len(images),) or not np.isfinite(values).all() or np.any(values < 0):
-        raise ValueError("noise_variance must be finite, nonnegative, and scalar or shape (n,)")
+    if (
+        values.shape != (len(images),)
+        or not np.isfinite(values).all()
+        or np.any(values < 0)
+    ):
+        raise ValueError(
+            "noise_variance must be finite, nonnegative, and scalar or shape (n,)"
+        )
     return values
 
 
@@ -153,13 +175,21 @@ def _reference_weights(reference_weights, n_images):
     if reference_weights is None:
         return None
     weights = np.asarray(reference_weights, dtype=float)
-    if (weights.shape != (n_images,) or not np.isfinite(weights).all()
-            or np.any(weights < 0) or not np.isclose(weights.sum(), 1.0)):
-        raise ValueError("reference_weights must be nonnegative, shape (n,), and sum to one")
+    if (
+        weights.shape != (n_images,)
+        or not np.isfinite(weights).all()
+        or np.any(weights < 0)
+        or not np.isclose(weights.sum(), 1.0)
+    ):
+        raise ValueError(
+            "reference_weights must be nonnegative, shape (n,), and sum to one"
+        )
     return weights
 
 
-def _spectral_pairs(images, reference, support, reference_weights, leave_one_out, batch_size):
+def _spectral_pairs(
+    images, reference, support, reference_weights, leave_one_out, batch_size
+):
     reference = np.asarray(reference)
     if reference.shape != images.shape[1:] or np.iscomplexobj(reference):
         raise ValueError("reference must be a real spatial image of shape (h, w)")
@@ -167,8 +197,12 @@ def _spectral_pairs(images, reference, support, reference_weights, leave_one_out
         raise ValueError("reference contains non-finite values")
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
-    if leave_one_out and (reference_weights is None or np.any(reference_weights >= 1.0)):
-        raise ValueError("leave_one_out requires linear reference weights strictly below one")
+    if leave_one_out and (
+        reference_weights is None or np.any(reference_weights >= 1.0)
+    ):
+        raise ValueError(
+            "leave_one_out requires linear reference weights strictly below one"
+        )
     reference_fft = _centered_fft(reference, support)
     for start in range(0, len(images), batch_size):
         stop = min(start + batch_size, len(images))
@@ -183,23 +217,33 @@ def _spectral_pairs(images, reference, support, reference_weights, leave_one_out
 
 def _moments(image_fft, reference_fft, spectral_weights):
     axes = (-2, -1)
-    cross = np.sum((image_fft * reference_fft.conj()).real * spectral_weights, axis=axes)
-    image_energy = np.sum(np.abs(image_fft)**2 * spectral_weights, axis=axes)
-    reference_energy = np.sum(np.abs(reference_fft)**2 * spectral_weights, axis=axes)
+    cross = np.sum(
+        (image_fft * reference_fft.conj()).real * spectral_weights, axis=axes
+    )
+    image_energy = np.sum(np.abs(image_fft) ** 2 * spectral_weights, axis=axes)
+    reference_energy = np.sum(np.abs(reference_fft) ** 2 * spectral_weights, axis=axes)
     return cross, image_energy, reference_energy
 
 
 def _cosine(cross, image_energy, reference_energy):
     denominator = np.sqrt(np.maximum(image_energy, 0) * np.maximum(reference_energy, 0))
-    score = np.divide(cross, denominator, out=np.zeros_like(cross), where=denominator > 0)
+    score = np.divide(
+        cross, denominator, out=np.zeros_like(cross), where=denominator > 0
+    )
     return np.clip(score, -1.0, 1.0)
 
 
 def lowpass_cosine_distance(
-    images: np.ndarray, reference: np.ndarray, *, sigma: float = 2.0,
-    min_frequency: float = 0.0, max_frequency: float | None = 0.25,
-    mask: np.ndarray | None = None, reference_weights: np.ndarray | None = None,
-    leave_one_out: bool = False, batch_size: int = 64,
+    images: np.ndarray,
+    reference: np.ndarray,
+    *,
+    sigma: float = 2.0,
+    min_frequency: float = 0.0,
+    max_frequency: float | None = 0.25,
+    mask: np.ndarray | None = None,
+    reference_weights: np.ndarray | None = None,
+    leave_one_out: bool = False,
+    batch_size: int = 64,
 ) -> np.ndarray:
     """Return 1 minus signed cosine after centering and Gaussian/band filtering.
 
@@ -213,7 +257,9 @@ def lowpass_cosine_distance(
     images = np.asarray(images)
     support = _support(images, mask)
     weights = _reference_weights(reference_weights, len(images))
-    spectral_weights = _spectral_weights(images.shape[1:], sigma, min_frequency, max_frequency)
+    spectral_weights = _spectral_weights(
+        images.shape[1:], sigma, min_frequency, max_frequency
+    )
     distances = np.empty(len(images))
     for idx, image_fft, ref_fft in _spectral_pairs(
         images, reference, support, weights, leave_one_out, batch_size
@@ -223,12 +269,20 @@ def lowpass_cosine_distance(
 
 
 def noise_debiased_cosine_distance(
-    images: np.ndarray, reference: np.ndarray, *, sigma: float = 2.0,
-    min_frequency: float = 0.0, max_frequency: float | None = 0.25,
-    noise_variance: str | float | np.ndarray = "auto", pool_noise: bool = False,
-    reference_noise_variance: float = 0.0, min_signal_fraction: float = 0.05,
-    mask: np.ndarray | None = None, reference_weights: np.ndarray | None = None,
-    leave_one_out: bool = False, batch_size: int = 64,
+    images: np.ndarray,
+    reference: np.ndarray,
+    *,
+    sigma: float = 2.0,
+    min_frequency: float = 0.0,
+    max_frequency: float | None = 0.25,
+    noise_variance: str | float | np.ndarray = "auto",
+    pool_noise: bool = False,
+    reference_noise_variance: float = 0.0,
+    min_signal_fraction: float = 0.05,
+    mask: np.ndarray | None = None,
+    reference_weights: np.ndarray | None = None,
+    leave_one_out: bool = False,
+    batch_size: int = 64,
 ) -> np.ndarray:
     """Estimate latent signed cosine by subtracting expected noise energy.
 
@@ -275,10 +329,15 @@ def noise_debiased_cosine_distance(
     if not np.isfinite(reference_noise_variance) or reference_noise_variance < 0:
         raise ValueError("reference_noise_variance must be finite and nonnegative")
     noise = _resolve_noise(images, support, noise_variance, pool_noise, batch_size)
-    spectral_weights = _spectral_weights(images.shape[1:], sigma, min_frequency, max_frequency)
+    spectral_weights = _spectral_weights(
+        images.shape[1:], sigma, min_frequency, max_frequency
+    )
     trace = float(np.sum(spectral_weights * _noise_power_profile(support)))
-    ref_variance = (float(np.sum(weights**2 * noise)) if weights is not None
-                    else reference_noise_variance)
+    ref_variance = (
+        float(np.sum(weights**2 * noise))
+        if weights is not None
+        else reference_noise_variance
+    )
     distances = np.empty(len(images))
     unresolved = 0
     for idx, image_fft, ref_fft in _spectral_pairs(
@@ -287,16 +346,19 @@ def noise_debiased_cosine_distance(
         cross, image_energy, ref_energy = _moments(image_fft, ref_fft, spectral_weights)
         if leave_one_out:
             w = weights[idx]
-            ref_noise = (ref_variance - w**2 * noise[idx]) / (1.0 - w)**2
+            ref_noise = (ref_variance - w**2 * noise[idx]) / (1.0 - w) ** 2
             cross_noise = 0.0
         else:
             ref_noise = ref_variance
             cross_noise = weights[idx] * noise[idx] if weights is not None else 0.0
         image_signal = image_energy - trace * noise[idx]
         ref_signal = ref_energy - trace * np.maximum(ref_noise, 0.0)
-        usable = ((image_signal > min_signal_fraction * trace * noise[idx])
-                  & (ref_signal > min_signal_fraction * trace * ref_noise)
-                  & (image_signal > 0) & (ref_signal > 0))
+        usable = (
+            (image_signal > min_signal_fraction * trace * noise[idx])
+            & (ref_signal > min_signal_fraction * trace * ref_noise)
+            & (image_signal > 0)
+            & (ref_signal > 0)
+        )
         score = _cosine(cross - trace * cross_noise, image_signal, ref_signal)
         distances[idx] = 1.0 - np.where(usable, score, 0.0)
         unresolved += np.count_nonzero(~usable)
@@ -304,16 +366,21 @@ def noise_debiased_cosine_distance(
         warnings.warn(
             f"Noise debiasing left {unresolved}/{len(images)} signal energies unresolved; "
             "those distances are neutral (1). Check filtering and noise estimates.",
-            RuntimeWarning, stacklevel=2,
+            RuntimeWarning,
+            stacklevel=2,
         )
     return distances
 
 
 def bandwise_cosine_distance(
-    images: np.ndarray, reference: np.ndarray, *,
+    images: np.ndarray,
+    reference: np.ndarray,
+    *,
     band_edges: tuple[float, ...] = (0.0, 0.05, 0.10, 0.20),
-    mask: np.ndarray | None = None, reference_weights: np.ndarray | None = None,
-    leave_one_out: bool = False, batch_size: int = 64,
+    mask: np.ndarray | None = None,
+    reference_weights: np.ndarray | None = None,
+    leave_one_out: bool = False,
+    batch_size: int = 64,
 ) -> np.ndarray:
     """Return 1 minus the equal-band average of signed Fourier cosines.
 
@@ -328,12 +395,21 @@ def bandwise_cosine_distance(
     support = _support(images, mask)
     weights = _reference_weights(reference_weights, len(images))
     edges = np.asarray(band_edges, dtype=float)
-    if (edges.ndim != 1 or len(edges) < 2 or not np.isfinite(edges).all()
-            or edges[0] < 0 or np.any(np.diff(edges) <= 0)):
-        raise ValueError("band_edges must be finite, nonnegative, and strictly increasing")
+    if (
+        edges.ndim != 1
+        or len(edges) < 2
+        or not np.isfinite(edges).all()
+        or edges[0] < 0
+        or np.any(np.diff(edges) <= 0)
+    ):
+        raise ValueError(
+            "band_edges must be finite, nonnegative, and strictly increasing"
+        )
     radius = _frequency_radius(images.shape[1:])
-    bands = [(radius > 0) & (radius >= lower) & (radius < upper)
-             for lower, upper in zip(edges[:-1], edges[1:])]
+    bands = [
+        (radius > 0) & (radius >= lower) & (radius < upper)
+        for lower, upper in zip(edges[:-1], edges[1:])
+    ]
     if not any(np.any(band) for band in bands):
         raise ValueError("The selected bands contain no Fourier coefficients")
     distances = np.empty(len(images))
@@ -346,11 +422,16 @@ def bandwise_cosine_distance(
 
 
 def phase_cosine_distance(
-    images: np.ndarray, reference: np.ndarray, *,
-    min_frequency: float = 0.02, max_frequency: float | None = 0.20,
+    images: np.ndarray,
+    reference: np.ndarray,
+    *,
+    min_frequency: float = 0.02,
+    max_frequency: float | None = 0.20,
     relative_floor: float = 1.0e-6,
-    mask: np.ndarray | None = None, reference_weights: np.ndarray | None = None,
-    leave_one_out: bool = False, batch_size: int = 64,
+    mask: np.ndarray | None = None,
+    reference_weights: np.ndarray | None = None,
+    leave_one_out: bool = False,
+    batch_size: int = 64,
 ) -> np.ndarray:
     """Return 1 minus equal-frequency phase agreement at the current alignment.
 
@@ -365,7 +446,9 @@ def phase_cosine_distance(
     weights = _reference_weights(reference_weights, len(images))
     if not np.isfinite(relative_floor) or not 0 <= relative_floor < 1:
         raise ValueError("relative_floor must lie in [0, 1)")
-    band = _spectral_weights(images.shape[1:], 0.0, min_frequency, max_frequency).astype(bool)
+    band = _spectral_weights(
+        images.shape[1:], 0.0, min_frequency, max_frequency
+    ).astype(bool)
     distances = np.empty(len(images))
     for idx, image_fft, ref_fft in _spectral_pairs(
         images, reference, support, weights, leave_one_out, batch_size
@@ -373,24 +456,34 @@ def phase_cosine_distance(
         image = image_fft[:, band]
         ref = ref_fft[..., band]
         image_abs, ref_abs = np.abs(image), np.abs(ref)
-        valid = ((image_abs > relative_floor * image_abs.max(axis=-1, keepdims=True))
-                 & (ref_abs > relative_floor * ref_abs.max(axis=-1, keepdims=True)))
+        valid = (image_abs > relative_floor * image_abs.max(axis=-1, keepdims=True)) & (
+            ref_abs > relative_floor * ref_abs.max(axis=-1, keepdims=True)
+        )
         unit_product = np.divide(
-            (image * ref.conj()).real, image_abs * ref_abs,
-            out=np.zeros_like(image_abs), where=valid,
+            (image * ref.conj()).real,
+            image_abs * ref_abs,
+            out=np.zeros_like(image_abs),
+            where=valid,
         )
         count = valid.sum(axis=-1)
-        score = np.divide(unit_product.sum(axis=-1), count,
-                          out=np.zeros(len(image)), where=count > 0)
+        score = np.divide(
+            unit_product.sum(axis=-1), count, out=np.zeros(len(image)), where=count > 0
+        )
         distances[idx] = 1.0 - np.clip(score, -1.0, 1.0)
     return distances
 
 
 def contrast_balanced_reference(
-    images: np.ndarray, *, mask: np.ndarray | None = None, sigma: float = 2.0,
-    min_frequency: float = 0.0, max_frequency: float | None = 0.25,
-    noise_variance: str | float | np.ndarray = "auto", pool_noise: bool = False,
-    min_signal_fraction: float = 0.05, max_weight_ratio: float = 5.0,
+    images: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
+    sigma: float = 2.0,
+    min_frequency: float = 0.0,
+    max_frequency: float | None = 0.25,
+    noise_variance: str | float | np.ndarray = "auto",
+    pool_noise: bool = False,
+    min_signal_fraction: float = 0.05,
+    max_weight_ratio: float = 5.0,
     batch_size: int = 64,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Form a mean with bounded inverse estimated signal-norm contributions.
@@ -412,19 +505,26 @@ def contrast_balanced_reference(
     """
     images = np.asarray(images)
     support = _support(images, mask)
-    if (not np.isfinite(max_weight_ratio) or max_weight_ratio < 1
-            or not np.isfinite(min_signal_fraction) or min_signal_fraction < 0):
+    if (
+        not np.isfinite(max_weight_ratio)
+        or max_weight_ratio < 1
+        or not np.isfinite(min_signal_fraction)
+        or min_signal_fraction < 0
+    ):
         raise ValueError("max_weight_ratio must be >= 1 and min_signal_fraction >= 0")
     noise = _resolve_noise(images, support, noise_variance, pool_noise, batch_size)
-    spectral_weights = _spectral_weights(images.shape[1:], sigma, min_frequency, max_frequency)
+    spectral_weights = _spectral_weights(
+        images.shape[1:], sigma, min_frequency, max_frequency
+    )
     trace = float(np.sum(spectral_weights * _noise_power_profile(support)))
     signal_energy = np.empty(len(images))
     for start in range(0, len(images), batch_size):
         stop = min(start + batch_size, len(images))
         spectrum = _centered_fft(images[start:stop], support)
-        signal_energy[start:stop] = np.sum(
-            np.abs(spectrum)**2 * spectral_weights, axis=(-2, -1)
-        ) - trace * noise[start:stop]
+        signal_energy[start:stop] = (
+            np.sum(np.abs(spectrum) ** 2 * spectral_weights, axis=(-2, -1))
+            - trace * noise[start:stop]
+        )
     usable = (signal_energy > min_signal_fraction * trace * noise) & (signal_energy > 0)
     contributions = np.ones(len(images))
     if np.any(usable):
@@ -436,7 +536,8 @@ def contrast_balanced_reference(
         warnings.warn(
             f"Balanced reference: {np.count_nonzero(~usable)}/{len(images)} norm estimates "
             "were unresolved; those contributions were left at the median weight.",
-            RuntimeWarning, stacklevel=2,
+            RuntimeWarning,
+            stacklevel=2,
         )
     weights = contributions / contributions.sum()
     reference = np.einsum("n,nhw->hw", weights, images, optimize=True)
@@ -452,15 +553,24 @@ EXPERIMENTAL_DISTANCE_FUNCTIONS: dict[str, Callable[..., np.ndarray]] = {
 
 
 def get_experimental_distance_function(
-    name: str, params: dict | None = None, *, mask: np.ndarray | None = None,
-    reference_weights: np.ndarray | None = None, leave_one_out: bool = False,
+    name: str,
+    params: dict | None = None,
+    *,
+    mask: np.ndarray | None = None,
+    reference_weights: np.ndarray | None = None,
+    leave_one_out: bool = False,
 ) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
     """Configure a local experimental metric without changing project registries."""
     configured = dict(params or {})
     reserved = {"mask", "reference_weights", "leave_one_out"} & configured.keys()
     if reserved:
-        raise ValueError(f"Set {sorted(reserved)} through the script/reference controls")
+        raise ValueError(
+            f"Set {sorted(reserved)} through the script/reference controls"
+        )
     return partial(
-        EXPERIMENTAL_DISTANCE_FUNCTIONS[name], **configured,
-        mask=mask, reference_weights=reference_weights, leave_one_out=leave_one_out,
+        EXPERIMENTAL_DISTANCE_FUNCTIONS[name],
+        **configured,
+        mask=mask,
+        reference_weights=reference_weights,
+        leave_one_out=leave_one_out,
     )

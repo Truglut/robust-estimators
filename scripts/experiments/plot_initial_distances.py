@@ -1,10 +1,12 @@
-"""Inspect initial image distances for one simulated SNR/run.
+"""Inspect initial image distances for a simulated run or stored MRC stack.
 
 Place this module alongside run_simulation.py and run it as a package module.
 It accepts the same YAML config and simulation CLI arguments, plus --distance,
 --distance-params, --snr-index, --run-index, --bins, --density, and --no-show.
 Local experimental_distances.py adds structural metrics, --reference-mode,
 --reference-params, and --leave-one-out/--no-leave-one-out.
+Use --source dataset for the MRC/config arguments of run_estimation.py.
+Stored data produces one histogram because its labels are unavailable.
 Only a histogram is saved under --results; no estimators are fitted.
 
 To reproduce a simulation run, pass the same --snr list (in the same order),
@@ -24,7 +26,10 @@ from matplotlib.figure import Figure
 import mrcfile
 import numpy as np
 
-from .cli import build_simulation_parser, parse_simulation_cfg
+from .cli import (
+    build_simulation_parser, parse_simulation_cfg,
+    build_estimation_parser, parse_estimation_cfg,
+)
 from .configs import InitializationStrategy, SimulationConfig
 from .dataset_builder import LABELS
 from .experimental_distances import (
@@ -32,11 +37,11 @@ from .experimental_distances import (
     contrast_balanced_reference,
     get_experimental_distance_function,
 )
-from .run_simulation import (
-    PreparedSimulationDataset,
-    prepare_initial_reference,
-    prepare_simulation_dataset,
+from .pipeline import (
+    PreparedDataset, prepare_initial_reference, prepare_image_dataset,
 )
+from .run_simulation import prepare_simulation_dataset
+from .run_estimation import load_image_stack
 from simple_mestimators.estimators.distances import (
     DISTANCE_FUNCTION_REGISTRY,
     DistanceFunction,
@@ -55,7 +60,7 @@ def build_simulation_mask(image_shape, radius):
 
 def build_dataset_for_run(
     cfg: SimulationConfig, snr_index: int = 0, run_index: int = 0
-) -> PreparedSimulationDataset:
+) -> PreparedDataset:
     """Reproduce the dataset preparation and seed used by run_simulation."""
     if not 0 <= snr_index < len(cfg.snrs):
         raise ValueError(f"snr_index must be in [0, {len(cfg.snrs)})")
@@ -85,17 +90,19 @@ def build_dataset_for_run(
 
 
 def calculate_initial_distances(
-    dataset: PreparedSimulationDataset,
+    dataset: PreparedDataset,
     distance_function: DistanceFunction,
     initialization_strategy: InitializationStrategy = "mean",
-    *, reference: np.ndarray | None = None,
+    *,
+    reference: np.ndarray | None = None,
 ) -> np.ndarray:
     """Return one finite real distance per image, without fitting an estimator.
 
     Parameters
     ----------
-    dataset : PreparedSimulationDataset
-        Dataset after the simulation's masking and standardization steps.
+    dataset : PreparedDataset
+        Images after the shared masking and standardization steps, with
+        optional simulation labels and ground truth.
     distance_function : callable
         Function accepting ``(images, reference)``. Custom callables can be
         passed directly when experimenting without registering a new function.
@@ -117,7 +124,9 @@ def calculate_initial_distances(
     images = dataset.preprocessed_images
     distances = np.asarray(distance_function(images, reference))
     if np.iscomplexobj(distances) or distances.size != images.shape[0]:
-        raise ValueError("The distance function must return one real distance per image")
+        raise ValueError(
+            "The distance function must return one real distance per image"
+        )
     distances = distances.reshape(-1)
     if not np.isfinite(distances).all():
         raise ValueError("The distance function returned non-finite values")
@@ -126,20 +135,20 @@ def calculate_initial_distances(
 
 def plot_distance_histogram(
     distances: np.ndarray,
-    labels: np.ndarray,
+    labels: np.ndarray | None = None,
     *,
     bins: int = 50,
     density: bool = False,
-    title: str = "Initial distances by label",
+    title: str | None = None,
 ) -> tuple[Figure, Axes]:
-    """Plot overlaid label histograms on one axis with shared bin edges.
+    """Plot labeled histograms with shared bins, or one unlabeled histogram.
 
     With ``density=True``, each label's histogram integrates to one, making
     distributions easier to compare when label counts differ.
     """
     distances = np.asarray(distances)
-    labels = np.asarray(labels)
-    if distances.ndim != 1 or labels.shape != distances.shape:
+    labels = None if labels is None else np.asarray(labels)
+    if distances.ndim != 1 or (labels is not None and labels.shape != distances.shape):
         raise ValueError("distances and labels must be matching one-dimensional arrays")
     if distances.size == 0 or not np.isfinite(distances).all():
         raise ValueError("Distances must be nonempty and finite")
@@ -150,21 +159,25 @@ def plot_distance_histogram(
     label_names = {value: name for name, value in LABELS.items()}
     colors = plt.get_cmap("tab10")
     fig, ax = plt.subplots(figsize=(9, 5), layout="constrained")
-    for label in np.unique(labels):
-        values = distances[labels == label]
+    groups = [(None, distances)] if labels is None else [
+        (label, distances[labels == label]) for label in np.unique(labels)
+    ]
+    for label, values in groups:
+        color = colors(0 if label is None else int(label) % 10)
+        name = "all images" if label is None else label_names.get(label, f"label {label}")
         ax.hist(
             values,
             bins=edges,
             density=density,
             histtype="stepfilled",
             alpha=0.4,
-            color=colors(int(label) % 10),
-            edgecolor=colors(int(label) % 10),
-            label=f"{label_names.get(label, f'label {label}')} (n={values.size})",
+            color=color,
+            edgecolor=color,
+            label=f"{name} (n={values.size})",
         )
     ax.set_xlabel("Initial distance to reference")
     ax.set_ylabel("Probability density" if density else "Number of images")
-    ax.set_title(title)
+    ax.set_title(title or ("Initial distances" if labels is None else "Initial distances by label"))
     ax.legend()
     return fig, ax
 
@@ -180,40 +193,70 @@ def parse_distance_params(value: str) -> dict:
     return params
 
 
-def main() -> None:
-    parser = build_simulation_parser()
-    parser.description = "Plot initial image distances for one simulated SNR/run"
+def build_distance_parser(argv: list[str] | None = None) -> argparse.ArgumentParser:
+    """Select the input-specific parser, retaining the old simulation default."""
+    selector = argparse.ArgumentParser(add_help=False)
+    selector.add_argument("--source", choices=("simulation", "dataset"), default="simulation")
+    source, _ = selector.parse_known_args(argv)
+    parser = build_simulation_parser() if source.source == "simulation" else build_estimation_parser()
+    parser.description = "Plot initial image distances without fitting estimators"
+    parser.add_argument("--source", choices=("simulation", "dataset"), default="simulation")
     parser.add_argument(
-        "--distance", choices=sorted(set(DISTANCE_FUNCTION_REGISTRY) | set(EXPERIMENTAL_DISTANCE_FUNCTIONS)), default="l2",
+        "--distance",
+        choices=sorted(
+            set(DISTANCE_FUNCTION_REGISTRY) | set(EXPERIMENTAL_DISTANCE_FUNCTIONS)
+        ),
+        default="l2",
         help="Distance registry key (default: %(default)s)",
     )
     parser.add_argument(
-        "--distance-params", type=parse_distance_params, default={},
+        "--distance-params",
+        type=parse_distance_params,
+        default={},
         help='Distance keyword arguments as JSON, e.g. \'{"beta": "auto"}\'',
     )
-    parser.add_argument("--snr-index", type=int, default=0, help="Zero-based SNR index")
-    parser.add_argument("--run-index", type=int, default=0, help="Zero-based run index")
+    if source.source == "simulation":
+        parser.add_argument("--snr-index", type=int, default=0, help="Zero-based SNR index")
+        parser.add_argument("--run-index", type=int, default=0, help="Zero-based run index")
     parser.add_argument("--bins", type=int, default=50, help="Number of histogram bins")
-    parser.add_argument("--density", action="store_true", help="Normalize each label separately")
-    parser.add_argument("--no-show", action="store_true", help="Save the plot without displaying it")
     parser.add_argument(
-        "--reference-mode", choices=["simulation", "contrast-balanced"], default="simulation",
-        help="Use the simulation initialization or balance estimated signal-norm contributions",
+        "--density", action="store_true", help="Normalize each label separately"
     )
     parser.add_argument(
-        "--reference-params", type=parse_distance_params, default={},
+        "--no-show", action="store_true", help="Save the plot without displaying it"
+    )
+    parser.add_argument(
+        "--reference-mode",
+        choices=["initialization", "simulation", "contrast-balanced"],
+        default="initialization",
+        help="Use configured initialization or a contrast-balanced reference ('simulation' is a legacy alias)",
+    )
+    parser.add_argument(
+        "--reference-params",
+        type=parse_distance_params,
+        default={},
         help="JSON keyword arguments for the contrast-balanced reference",
     )
     parser.add_argument(
-        "--leave-one-out", action=argparse.BooleanOptionalAction, default=None,
+        "--leave-one-out",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Remove self-contribution; automatic for experimental metrics with a linear reference",
     )
-    args = parser.parse_args()
-    cfg = parse_simulation_cfg(args)
+    return parser
 
-    dataset = build_dataset_for_run(cfg, args.snr_index, args.run_index)
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_distance_parser(argv)
+    args = parser.parse_args(argv)
+    cfg = parse_simulation_cfg(args) if args.source == "simulation" else parse_estimation_cfg(args)
+
+    if args.source == "simulation":
+        dataset = build_dataset_for_run(cfg, args.snr_index, args.run_index)
+    else:
+        dataset = prepare_image_dataset(load_image_stack(cfg.io.dataset_path), cfg.preprocessing)
     images = dataset.preprocessed_images
-    mask = build_simulation_mask(images.shape[1:], cfg.preprocessing.mask_radius)
+    mask = dataset.mask
     if args.reference_mode == "contrast-balanced":
         reference, reference_weights = contrast_balanced_reference(
             images, mask=mask, **args.reference_params
@@ -221,7 +264,9 @@ def main() -> None:
         reference_name = "contrast-balanced"
     else:
         if args.reference_params:
-            parser.error("--reference-params requires --reference-mode contrast-balanced")
+            parser.error(
+                "--reference-params requires --reference-mode contrast-balanced"
+            )
         reference = prepare_initial_reference(dataset, cfg.initialization_strategy)
         reference_name = cfg.initialization_strategy
         reference_weights = None
@@ -234,17 +279,26 @@ def main() -> None:
     experimental = args.distance in EXPERIMENTAL_DISTANCE_FUNCTIONS
     leave_one_out = args.leave_one_out
     if leave_one_out is None:
-        leave_one_out = experimental and reference_weights is not None
-    if leave_one_out and (not experimental or reference_weights is None):
-        parser.error("Leave-one-out requires an experimental metric and a linear mean reference")
+        leave_one_out = bool(experimental and reference_weights is not None
+                             and np.all(reference_weights < 1.0))
+    if leave_one_out and (not experimental or reference_weights is None
+                         or np.any(reference_weights >= 1.0)):
+        parser.error(
+            "Leave-one-out requires an experimental metric and linear reference weights below one"
+        )
     if experimental:
         distance_function = get_experimental_distance_function(
-            args.distance, args.distance_params, mask=mask,
-            reference_weights=reference_weights, leave_one_out=leave_one_out,
+            args.distance,
+            args.distance_params,
+            mask=mask,
+            reference_weights=reference_weights,
+            leave_one_out=leave_one_out,
         )
         if args.distance == "noise_debiased_cosine" and reference_name == "median":
             if "reference_noise_variance" not in args.distance_params:
-                parser.error("Median reference noise is not calibrated: provide reference_noise_variance")
+                parser.error(
+                    "Median reference noise is not calibrated: provide reference_noise_variance"
+                )
     else:
         distance_function = get_distance_function(
             args.distance, args.distance_params, imgs=images
@@ -253,37 +307,64 @@ def main() -> None:
         dataset, distance_function, reference=reference
     )
     print(f"Reference={reference_name}; leave-one-out={leave_one_out}")
-    for name, label in LABELS.items():
-        values = distances[dataset.labels == label]
+    groups = [("all images", distances)] if dataset.labels is None else [
+        (name, distances[dataset.labels == label]) for name, label in LABELS.items()
+    ]
+    for name, values in groups:
         if values.size:
-            print(f"{name:14s} n={values.size:5d} mean={values.mean():.6g} "
-                  f"std={values.std():.6g} median={np.median(values):.6g}")
+            print(
+                f"{name:14s} n={values.size:5d} mean={values.mean():.6g} "
+                f"std={values.std():.6g} median={np.median(values):.6g}"
+            )
     if args.distance == "noise_debiased_cosine":
-        print(f"Neutral distances: {np.count_nonzero(distances == 1.0)}/{len(distances)}; "
-              f"clipped endpoints: {np.count_nonzero((distances == 0.0) | (distances == 2.0))}/{len(distances)}")
-    snr = cfg.snrs[args.snr_index]
+        print(
+            f"Neutral distances: {np.count_nonzero(distances == 1.0)}/{len(distances)}; "
+            f"clipped endpoints: {np.count_nonzero((distances == 0.0) | (distances == 2.0))}/{len(distances)}"
+        )
+    if args.source == "simulation":
+        snr = cfg.snrs[args.snr_index]
+        description = f"SNR={snr:g} | run={args.run_index}"
+        dataset_suffix = f"_snr_{snr:g}_run_{args.run_index:03d}"
+    else:
+        description = cfg.io.dataset_path.name
+        dataset_suffix = "_dataset"
     fig, _ = plot_distance_histogram(
-        distances, dataset.labels, bins=args.bins, density=args.density,
-        title=(f"{args.distance} | SNR={snr:g} | run={args.run_index} | "
-               f"reference={reference_name}" + (" | leave-one-out" if leave_one_out else "")),
+        distances,
+        dataset.labels,
+        bins=args.bins,
+        density=args.density,
+        title=(
+            f"{args.distance} | {description} | "
+            f"reference={reference_name}"
+            + (" | leave-one-out" if leave_one_out else "")
+        ),
     )
     # Keep legacy filenames; distinguish new reference/parameter experiments.
     suffix = ""
-    if experimental or args.reference_mode != "simulation":
-        settings = json.dumps({
-            "distance": args.distance_params, "reference": args.reference_params,
-            "strategy": reference_name, "leave_one_out": leave_one_out,
-        }, sort_keys=True)
-        suffix = f"_{reference_name}_{hashlib.sha256(settings.encode()).hexdigest()[:8]}"
+    if experimental or args.reference_mode == "contrast-balanced":
+        settings = json.dumps(
+            {
+                "distance": args.distance_params,
+                "reference": args.reference_params,
+                "strategy": reference_name,
+                "leave_one_out": leave_one_out,
+            },
+            sort_keys=True,
+        )
+        suffix = (
+            f"_{reference_name}_{hashlib.sha256(settings.encode()).hexdigest()[:8]}"
+        )
     output = cfg.io.base_results_path / (
-        f"initial_distances_{args.distance}{suffix}_snr_{snr:g}_run_{args.run_index:03d}.png"
+        f"initial_distances_{args.distance}{suffix}{dataset_suffix}.png"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=180)
-    print(f"Saved histogram to {output}")
-    if not args.no_show:
-        plt.show()
-    plt.close(fig)
+    try:
+        fig.savefig(output, dpi=180)
+        print(f"Saved histogram to {output}")
+        if not args.no_show:
+            plt.show()
+    finally:
+        plt.close(fig)
 
 
 if __name__ == "__main__":

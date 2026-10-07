@@ -1,4 +1,4 @@
-"""Read simulation results written by output.py.
+"""Read simulation and stored-dataset results written by output.py.
 
 This module is intentionally standalone: it depends only on the Python standard
 library and NumPy, and does not import any project modules.
@@ -14,7 +14,6 @@ from typing import TypeAlias
 
 import numpy as np
 
-
 _SNR_DIR_RE = re.compile(r"^snr_(.+)$")
 _RUN_DIR_RE = re.compile(r"^run_(\d+)$")
 _WEIGHT_FILE_RE = re.compile(r"^weights_(.+)\.npy$")
@@ -27,6 +26,7 @@ class SavedEstimatorResult:
     estimate: np.ndarray | None
     weights: dict[str, np.ndarray]
     dataset_seed: int | None
+    fourier_estimate: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,15 @@ class SimulationParameters:
     """Shared simulation arrays saved at the experiment root."""
 
     ground_truth: np.ndarray
+    labels: np.ndarray | None
+    mask: np.ndarray | None
+
+
+@dataclass(frozen=True)
+class ExperimentParameters:
+    """Optional shared arrays, also valid for experiments on unlabeled data."""
+
+    ground_truth: np.ndarray | None
     labels: np.ndarray | None
     mask: np.ndarray | None
 
@@ -77,9 +86,7 @@ def _read_saved_run(run_directory: Path) -> SavedEstimatorResult:
 
     estimate_path = run_directory / "estimate.npy"
     estimate = (
-        np.load(estimate_path, allow_pickle=False)
-        if estimate_path.is_file()
-        else None
+        np.load(estimate_path, allow_pickle=False) if estimate_path.is_file() else None
     )
 
     weights: dict[str, np.ndarray] = {}
@@ -98,6 +105,11 @@ def _read_saved_run(run_directory: Path) -> SavedEstimatorResult:
         estimate=estimate,
         weights=weights,
         dataset_seed=dataset_seed,
+        fourier_estimate=(
+            np.load(run_directory / "fourier_estimate.npy", allow_pickle=False)
+            if (run_directory / "fourier_estimate.npy").is_file()
+            else None
+        ),
     )
 
 
@@ -142,6 +154,14 @@ def read_estimator_results(
         )
 
     results: EstimatorResults = {}
+
+    if any(
+        path.is_dir() and _RUN_DIR_RE.fullmatch(path.name)
+        for path in estimator_directory.iterdir()
+    ):
+        raise ValueError(
+            "Stored-dataset results require read_dataset_estimator_results()"
+        )
 
     snr_directories = sorted(
         (
@@ -228,18 +248,10 @@ def read_simulation_parameters(base_directory: Path) -> SimulationParameters:
     ground_truth = np.load(ground_truth_path, allow_pickle=False)
 
     labels_path = base_directory / "labels.npy"
-    labels = (
-        np.load(labels_path, allow_pickle=False)
-        if labels_path.is_file()
-        else None
-    )
+    labels = np.load(labels_path, allow_pickle=False) if labels_path.is_file() else None
 
     mask_path = base_directory / "mask.npy"
-    mask = (
-        np.load(mask_path, allow_pickle=False)
-        if mask_path.is_file()
-        else None
-    )
+    mask = np.load(mask_path, allow_pickle=False) if mask_path.is_file() else None
 
     return SimulationParameters(
         ground_truth=ground_truth,
@@ -256,6 +268,75 @@ def read_simulation_config(base_directory: Path) -> dict:
     return _read_json(config_path)
 
 
+def read_experiment_config(base_directory: Path) -> dict:
+    """Read the configuration of either kind of experiment."""
+    return _read_json(Path(base_directory) / "config.json")
+
+
+def read_experiment_parameters(base_directory: Path) -> ExperimentParameters:
+    """Read available shared arrays without requiring ground truth or labels."""
+    root = Path(base_directory)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Experiment directory does not exist: {root}")
+
+    def optional_array(name):
+        path = root / name
+        return np.load(path, allow_pickle=False) if path.is_file() else None
+
+    return ExperimentParameters(
+        ground_truth=optional_array("ground_truth.npy"),
+        labels=optional_array("labels.npy"),
+        mask=optional_array("mask.npy"),
+    )
+
+
+def read_dataset_estimator_results(
+    base_directory: Path,
+    estimator_name: str | Path,
+) -> dict[int, SavedEstimatorResult]:
+    """Read stored-dataset results indexed by run, without an SNR dimension."""
+    name = Path(estimator_name)
+    directory = (
+        name if name.is_absolute() else Path(base_directory) / "estimators" / name
+    )
+    if not directory.is_dir():
+        raise FileNotFoundError(
+            f"Estimator results directory does not exist: {directory}"
+        )
+    if any(
+        path.is_dir() and _SNR_DIR_RE.fullmatch(path.name)
+        for path in directory.iterdir()
+    ):
+        raise ValueError("Simulation results require read_estimator_results()")
+    runs = sorted(
+        (
+            path
+            for path in directory.iterdir()
+            if path.is_dir() and _RUN_DIR_RE.fullmatch(path.name)
+        ),
+        key=_parse_run_directory,
+    )
+    return {
+        _parse_run_directory(path): _read_saved_run(path)
+        for path in runs
+        if (path / "run.json").is_file()
+    }
+
+
+def read_all_dataset_estimator_results(
+    base_directory: Path,
+) -> dict[str, dict[int, SavedEstimatorResult]]:
+    """Read all estimators for an experiment on a stored dataset."""
+    directory = Path(base_directory) / "estimators"
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Estimators directory does not exist: {directory}")
+    return {
+        path.name: read_dataset_estimator_results(base_directory, path.name)
+        for path in sorted(directory.iterdir())
+        if path.is_dir()
+    }
+
+
 def read_estimator_config(base_directory: Path, estimator_name: str | Path) -> dict:
     """Read one estimator's saved ``config.json`` as a plain dictionary."""
     estimator_name = Path(estimator_name)
@@ -263,10 +344,7 @@ def read_estimator_config(base_directory: Path, estimator_name: str | Path) -> d
         config_path = estimator_name / "config.json"
     else:
         config_path = (
-            Path(base_directory)
-            / "estimators"
-            / estimator_name
-            / "config.json"
+            Path(base_directory) / "estimators" / estimator_name / "config.json"
         )
 
     if not config_path.is_file():

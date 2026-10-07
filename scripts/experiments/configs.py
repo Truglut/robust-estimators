@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 StandardizeOption = Literal["before", "after", "both", "none"]
 InitializationStrategy = Literal["mean", "median", "mean-good", "ground-truth"]
+DataInitializationStrategy = Literal["mean", "median"]
 
 
 @dataclass
@@ -118,6 +119,50 @@ class PreprocessingConfig:
 
 
 @dataclass
+class EstimationIOConfig:
+    dataset_path: Path
+    base_results_path: Path
+    save_weights: bool = True
+    save_estimates: bool = True
+
+
+@dataclass
+class EstimationConfig:
+    """One fit of each estimator on an existing stack of aligned 2D images."""
+
+    io: EstimationIOConfig
+    estimators: list[EstimatorConfig]
+    preprocessing: PreprocessingConfig
+    initialization_strategy: DataInitializationStrategy = "mean"
+    seed: int = 42
+
+    def __post_init__(self):
+        names = [method.name for method in self.estimators]
+        if not names or len(names) != len(set(names)) or "mean" in names:
+            raise ValueError("Provide unique estimator names; 'mean' is reserved")
+        if self.initialization_strategy not in get_args(DataInitializationStrategy):
+            raise ValueError(
+                "Stored datasets support only mean or median initialization"
+            )
+        if self.preprocessing.standardize not in ("none", "after"):
+            raise ValueError(
+                "Stored datasets support only 'none' or 'after' standardization"
+            )
+        radius = self.preprocessing.mask_radius
+        if radius is not None and (not 0 < radius < float("inf")):
+            raise ValueError("mask_radius must be finite and positive")
+        if not isinstance(self.seed, int) or not 0 <= self.seed <= 2**32 - 1:
+            raise ValueError("seed must be an integer in [0, 2**32 - 1]")
+        if self.initialization_strategy == "median" and any(
+            method.estimator_type == "noise_corrected_cosine"
+            for method in self.estimators
+        ):
+            raise ValueError(
+                "Noise-corrected cosine requires mean initialization for stored datasets"
+            )
+
+
+@dataclass
 class SimulationConfig:
     snrs: list[float]
     n_runs: int
@@ -138,8 +183,8 @@ class SimulationConfig:
             raise ValueError("n_runs must be a positive integer")
 
         names = [method.name for method in self.estimators]
-        if not names or len(names) != len(set(names)):
-            raise ValueError("Provide at least one estimator with unique names")
+        if not names or len(names) != len(set(names)) or "mean" in names:
+            raise ValueError("Provide unique estimator names; 'mean' is reserved")
 
         if not isinstance(self.seed, int) or not 0 <= self.seed <= 2**32 - 1:
             raise ValueError("seed must be an integer in [0, 2**32 - 1]")
