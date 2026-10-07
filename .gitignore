@@ -3,6 +3,7 @@ configs
 bash_scripts
 results
 scratch
+diagnostics
 
 # Python-generated files
 __pycache__/
