@@ -189,6 +189,12 @@ class IRLSSolver(Estimator):
             If ``max_iter`` is negative.
         """
         max_iter = self.max_iter if max_iter_override is None else max_iter_override
+        self.converged = False
+        self.n_its = 0
+        self.diagnostics = {
+            "n_iter": 0, "converged": False, "stop_reason": "max_iter",
+            "relative_change": None, "max_iter_effective": max_iter,
+        }
 
         if max_iter < 0:
             raise ValueError(f"`max_iter` must be non-negative, got {max_iter}.")
@@ -208,6 +214,7 @@ class IRLSSolver(Estimator):
         # Handle 0-iteration shortcut (unweighted baseline)
         if max_iter == 0:
             self.converged = True
+            self.diagnostics.update(converged=True, stop_reason="zero_iterations")
             return reference, weights
 
         # Get safe variances and std
@@ -221,7 +228,7 @@ class IRLSSolver(Estimator):
                 prior_variance = max(prior_variance, self.eps)
 
         # Main iterations loop
-        for _ in range(max_iter):
+        for i in range(max_iter):
             next_reference, weights = self._fit_one_iteration(
                 images,
                 image_variance=image_variance,
@@ -236,12 +243,15 @@ class IRLSSolver(Estimator):
             ref_norm = np.linalg.norm(reference)
             diff_norm = np.linalg.norm(next_reference - reference)
             relative_difference = diff_norm / (ref_norm + self.eps)
+            self.n_its = i + 1
+            self.diagnostics.update(n_iter=self.n_its, relative_change=float(relative_difference))
 
             # Update reference before possibly breaking out of the loop
             reference = next_reference
 
             if relative_difference < self.tol:
                 self.converged = True
+                self.diagnostics.update(converged=True, stop_reason="tolerance")
                 break
 
         return reference, weights
@@ -292,4 +302,5 @@ class IRLSSolver(Estimator):
                 "real": weights,
                 "fourier": None,
             },
+            diagnostics=self.diagnostics.copy(),
         )
