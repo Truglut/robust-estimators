@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import hashlib
+import platform
+from importlib.metadata import version, PackageNotFoundError
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +44,24 @@ def save_json(path: Path, data: dict) -> None:
         file.write(content + "\n")
 
 
+def runtime_provenance() -> dict:
+    """Record the actual runtime and a content fingerprint of project Python sources."""
+    packages = {}
+    for name in ("numpy", "scipy", "scikit-learn", "mrcfile", "PyYAML"):
+        try:
+            packages[name] = version(name)
+        except PackageNotFoundError:
+            packages[name] = None
+    root = Path(__file__).resolve().parents[2]
+    digest = hashlib.sha256()
+    for folder in ("src", "scripts"):
+        for path in sorted((root / folder).rglob("*.py")):
+            digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+    return {"python": platform.python_version(), "packages": packages,
+            "source_sha256": digest.hexdigest()}
+
+
 def initialize_output(
     cfg: SimulationConfig | EstimationConfig,
     *,
@@ -70,6 +91,7 @@ def initialize_output(
         format_version=2 if is_simulation else 3,
         experiment_type="simulation" if is_simulation else "dataset",
         estimator_names=["mean", *[method.name for method in cfg.estimators]],
+        provenance=runtime_provenance(),
     )
     if label_names is not None:
         config["label_names"] = label_names
@@ -123,4 +145,7 @@ def save_estimator_result(
         for space, weights in result.weights.items():
             if weights is not None:
                 np.save(directory / f"weights_{space}.npy", weights, allow_pickle=False)
-    save_json(directory / "run.json", {"dataset_seed": dataset_seed})
+    metadata = {"dataset_seed": dataset_seed}
+    if result.diagnostics:
+        metadata["diagnostics"] = result.diagnostics
+    save_json(directory / "run.json", metadata)

@@ -46,7 +46,7 @@ def build_base_parser(*, simulation: bool = True) -> argparse.ArgumentParser:
         parser.add_argument(
             f"--save-{flag}",
             action=argparse.BooleanOptionalAction,
-            default=True if simulation else None,
+            default=None,
             help=f"Save {flag} (default: %(default)s)",
         )
     return parser
@@ -58,103 +58,88 @@ def build_simulation_parser() -> argparse.ArgumentParser:
     arguments to the base parser.
     """
     parser = build_base_parser()
-
+    parser.description = "Run simulations; scientific parameters are read from YAML."
     parser.add_argument(
-        "--initialization-strategy",
-        type=str,
-        choices=get_args(InitializationStrategy),
-        default="mean",
-        help=(
-            "Initialization to use for the estimators that take an initial reference. "
-            "'mean' means taking the average of all the input images. "
-            "'median' means taking the median of all input images. "
-            "'mean-good' means taking the average of only the good input images. "
-            "'ground-truth' means using the ground truth image as the initial reference. "
-            "'mean-good' and 'ground-truth' exist for testing purposes, but "
-            "are clearly not realistic."
-        ),
-    )
-
-    simulation_group = parser.add_argument_group("Simulation")
-    simulation_group.add_argument(
-        "--seed", type=int, default=42, help="Simulation seed (default: %(default)s)"
-    )
-
-    # Simulation
-    simulation_group.add_argument(
-        "--snr",
-        nargs="+",
-        type=float,
-        help="Target signal to noise ratios in image generation. Default is [0.01]",
-        default=[0.01],
-    )
-
-    simulation_group.add_argument(
-        "--standardize",
-        choices=get_args(StandardizeOption),
-        default="none",
-        help="When to standardize generated images. Default is %(default)s",
-    )
-    simulation_group.add_argument(
-        "--n-runs",
-        type=int,
-        default=1,
-        help="Number of simulations to run with the specified configuration.",
-    )
-    simulation_group.add_argument(
         "--reference-image-path",
         type=Path,
         help="Path to the .mrc file containing the image that will be used as the reference for the simulation. If provided, will override the path in the config file.",
     )
-    simulation_group.add_argument(
+    parser.add_argument(
         "--misclassified-path",
         type=Path,
         help="Path to the .mrc file containing the image that will be used as misclassified images for the simulation. If provided, will override the path in the config file.",
-    )
-    simulation_group.add_argument(
-        "--standardize-reference",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="If True, the reference image will be standardized to unit std before generating the dataset",
     )
     return parser
 
 
 def parse_simulation_cfg(args: argparse.Namespace):
-    config_path = Path(args.config)
-    with open(config_path, "r") as file:
+    config_path = Path(args.config).expanduser().resolve()
+    with config_path.open(encoding="utf-8") as file:
         cfg = yaml.safe_load(file)
+    if not isinstance(cfg, dict):
+        raise ValueError("The YAML configuration must be a mapping")
+    unknown = set(cfg) - {"data", "output", "experiment", "simulation", "preprocessing", "generation", "mask"}
+    if unknown:
+        raise ValueError(f"Unknown simulation configuration sections: {sorted(unknown)}")
+    data = cfg.get("data", {})
+    output = cfg.get("output", {})
+    experiment = cfg.get("experiment", {})
+    simulation = cfg.get("simulation", {})
+    preprocessing = cfg.get("preprocessing", {})
+    for section, mapping, allowed in (
+        ("data", data, {"reference_image_path", "misclassified_path"}),
+        ("output", output, {"save_weights", "save_estimates", "save_labels"}),
+        ("preprocessing", preprocessing, {"mask_radius", "standardize"}),
+    ):
+        if set(mapping) - allowed:
+            raise ValueError(f"Unknown {section} settings: {sorted(set(mapping) - allowed)}")
+    unknown = set(simulation) - {"snrs", "n_runs"}
+    if unknown:
+        raise ValueError(f"Unknown simulation settings: {sorted(unknown)}")
+    unknown = set(experiment) - {"methods", "seed", "initialization_strategy"}
+    if unknown:
+        raise ValueError(f"Unknown experiment settings: {sorted(unknown)}")
+    methods = experiment.get("methods")
+    if not isinstance(methods, list) or not methods:
+        raise ValueError("experiment.methods must contain at least one estimator")
 
-    reference_path = args.reference_image_path or cfg["data"]["reference_image_path"]
+    def path_option(cli_path, yaml_path, name, *, required=True):
+        if cli_path is not None:
+            return Path(cli_path).expanduser().resolve()
+        if yaml_path is None:
+            if required:
+                raise ValueError(f"Provide {name} in YAML or on the command line")
+            return None
+        path = Path(yaml_path).expanduser()
+        return path.resolve() if path.is_absolute() else (config_path.parent / path).resolve()
 
-    misclassified_path = None
-    if args.misclassified_path is not None:
-        misclassified_path = Path(args.misclassified_path)
-    elif (m_path := cfg["data"].get("misclassified_path")) is not None:
-        misclassified_path = Path(m_path)
+    reference_path = path_option(
+        args.reference_image_path, data.get("reference_image_path"), "data.reference_image_path"
+    )
+    misclassified_path = path_option(
+        args.misclassified_path, data.get("misclassified_path"), "data.misclassified_path", required=False
+    )
 
     io_cfg = IOConfig(
         reference_path=Path(reference_path),
         misclassified_path=misclassified_path,
         base_results_path=Path(args.results),
-        save_weights=args.save_weights,
-        save_estimates=args.save_estimates,
-        save_labels=args.save_labels,
+        save_weights=output.get("save_weights", True) if args.save_weights is None else args.save_weights,
+        save_estimates=output.get("save_estimates", True) if args.save_estimates is None else args.save_estimates,
+        save_labels=output.get("save_labels", True) if args.save_labels is None else args.save_labels,
     )
 
-    mask_cfg = cfg.get("mask")
-    radius = None if mask_cfg is None else mask_cfg.get("radius")
+    if "mask" in cfg and "mask_radius" in preprocessing:
+        raise ValueError("Use preprocessing.mask_radius or legacy mask.radius, not both")
+    radius = preprocessing.get("mask_radius", (cfg.get("mask") or {}).get("radius"))
     preprocessing_cfg = PreprocessingConfig(
         mask_radius=radius,
-        standardize=args.standardize,
+        standardize=preprocessing.get("standardize", "none"),
     )
-
-    dataset_cfg = DatasetConfig(
-        standardize_reference=args.standardize_reference, **cfg["generation"]
-    )
+    dataset_cfg = DatasetConfig(**cfg["generation"])
 
     estimator_cfgs: list[EstimatorConfig] = []
-    for method_cfg in cfg["experiment"]["methods"]:
+    for method_cfg in methods:
         estimator_cfgs.append(
             EstimatorConfig(
                 name=method_cfg["name"],
@@ -164,14 +149,14 @@ def parse_simulation_cfg(args: argparse.Namespace):
         )
 
     sim_cfg = SimulationConfig(
-        snrs=args.snr,
-        n_runs=args.n_runs,
+        snrs=simulation.get("snrs", [0.01]),
+        n_runs=simulation.get("n_runs", 1),
         dataset=dataset_cfg,
-        initialization_strategy=args.initialization_strategy,
+        initialization_strategy=experiment.get("initialization_strategy", "mean"),
         io=io_cfg,
         preprocessing=preprocessing_cfg,
         estimators=estimator_cfgs,
-        seed=args.seed,
+        seed=experiment.get("seed", 42),
     )
 
     return sim_cfg

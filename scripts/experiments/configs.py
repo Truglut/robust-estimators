@@ -174,8 +174,8 @@ class SimulationConfig:
     seed: int = 42
 
     def __post_init__(self):
-        if any(snr <= 0 for snr in self.snrs):
-            raise ValueError("SNR values must be positive")
+        if not self.snrs or any(not 0 < snr < float("inf") for snr in self.snrs):
+            raise ValueError("SNR values must be finite and positive, with at least one SNR")
         if len(set(self.snrs)) != len(self.snrs):
             raise ValueError("SNRs must be unique")
 
@@ -193,6 +193,11 @@ class SimulationConfig:
             raise ValueError(
                 f"Unsupported initialization: {self.initialization_strategy!r}"
             )
+        if self.preprocessing.standardize not in get_args(StandardizeOption):
+            raise ValueError("Unsupported standardization option")
+        radius = self.preprocessing.mask_radius
+        if radius is not None and not 0 < radius < float("inf"):
+            raise ValueError("mask_radius must be finite and positive")
 
         if self.initialization_strategy == "mean-good" and self.dataset.n_copies == 0:
             raise ValueError("mean-good initialization requires good images")

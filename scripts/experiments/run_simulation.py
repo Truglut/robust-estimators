@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 
 import numpy as np
 import mrcfile
@@ -63,7 +64,10 @@ def run_simulation(cfg: SimulationConfig) -> Path:
     mask_radius = cfg.preprocessing.mask_radius
     if mask_radius is None:
         h, w = ground_truth.shape
-        mask_radius = max(h // 2, w // 2)
+        mask_radius = min(h // 2, w // 2)
+        cfg = replace(
+            cfg, preprocessing=replace(cfg.preprocessing, mask_radius=mask_radius)
+        )
     mask = create_circular_mask(image_shape=ground_truth.shape, radius=mask_radius)
 
     labels = None

@@ -4,6 +4,8 @@ from typing import overload
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, replace
+import inspect
+from functools import partial
 
 import numpy as np
 
@@ -103,7 +105,40 @@ def run_experiment(
             )
         else:
             result = estimator.fit(image_batch, reference=initial_reference.copy())
+        result.diagnostics["effective_estimator"] = estimator_settings(estimator)
+        result.diagnostics["numerical_conventions"] = {
+            "fft_norm": image_batch.norm,
+            "fourier_storage": "rfft2",
+            "variance": "empirical per-pixel/per-frequency; ddof=1 for n>1",
+            "complex_variance": "E[abs(z-E[z])**2]",
+            "weights_reference": "reference before the final weighted update",
+        }
         yield cfg.name, result
+
+
+def estimator_settings(estimator) -> dict:
+    """Snapshot resolved scalar options, including data-dependent weight scales."""
+    settings = {"class": type(estimator).__name__}
+    for name in inspect.signature(type(estimator).__init__).parameters:
+        if not hasattr(estimator, name):
+            continue
+        value = getattr(estimator, name, None)
+        if name != "self" and (value is None or isinstance(value, (str, int, float, bool))):
+            settings[name] = value
+    for name in ("weight_function", "distance_function"):
+        fn = getattr(estimator, name, None)
+        if isinstance(fn, partial):
+            settings[name] = {"function": fn.func.__name__, "params": dict(fn.keywords)}
+    for name in ("solver", "irls_real", "irls_fourier"):
+        child = getattr(estimator, name, None)
+        if child is not None:
+            settings[name] = estimator_settings(child)
+    if hasattr(estimator, "model"):
+        settings["gmm"] = {
+            k: v for k, v in estimator.model.get_params().items()
+            if k not in {"means_init", "weights_init", "precisions_init"}
+        }
+    return settings
 
 
 def sample_mean_result(dataset: PreparedDataset) -> EstimatorResult:
