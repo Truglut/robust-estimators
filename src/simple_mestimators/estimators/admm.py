@@ -53,7 +53,26 @@ class ADMMEstimator(Estimator):
         atol: float = 1.0e-4,
         rtol: float = 1.0e-4,
         eps: float = 1.0e-8,
+        check_every: int = 5,
+        inner_initial_iter: int = 5,
+        inner_iter_increment: int = 1,
+        adaptive_mu: bool = True,
+        mu_balance_ratio: float = 10.0,
+        mu_increase_factor: float = 2.0,
+        mu_decrease_factor: float = 2.0,
     ) -> None:
+        for name, value in (("max_iter", max_iter), ("inner_iter_increment", inner_iter_increment)):
+            if not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
+        for name, value in (("check_every", check_every), ("inner_initial_iter", inner_initial_iter)):
+            if not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        for name, value in (("initial_mu", initial_mu), ("fourier_multiplier", fourier_multiplier),
+                            ("mu_balance_ratio", mu_balance_ratio)):
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if any(not np.isfinite(v) or v <= 1 for v in (mu_increase_factor, mu_decrease_factor)):
+            raise ValueError("mu increase/decrease factors must exceed one")
         self.irls_real = irls_real
         self.irls_fourier = irls_fourier
         self.max_iter = max_iter
@@ -62,6 +81,13 @@ class ADMMEstimator(Estimator):
         self.initial_mu = initial_mu
         self.fourier_multiplier = fourier_multiplier
         self.eps = eps
+        self.check_every = check_every
+        self.inner_initial_iter = inner_initial_iter
+        self.inner_iter_increment = inner_iter_increment
+        self.adaptive_mu = adaptive_mu
+        self.mu_balance_ratio = mu_balance_ratio
+        self.mu_increase_factor = mu_increase_factor
+        self.mu_decrease_factor = mu_decrease_factor
 
         self.converged = False
         self.n_its = None
@@ -168,12 +194,21 @@ class ADMMEstimator(Estimator):
 
         results = None
         self.converged = False
+        self.n_its = 0
+        self.diagnostics = {
+            "n_iter": 0, "converged": False,
+            "stop_reason": "max_iter" if self.max_iter else "zero_iterations",
+            "primal_residual": None, "dual_residual": None,
+            "primal_threshold": None, "dual_threshold": None,
+        }
         for i in range(self.max_iter):
+            self.n_its = i + 1
+            inner_limit = self.inner_initial_iter + i * self.inner_iter_increment
             results = self._fit_one_iteration(
                 data=data,
                 state=state,
-                real_irls_max_iter=min(5 + i, self.irls_real.max_iter),
-                fourier_irls_max_iter=min(5 + i, self.irls_fourier.max_iter),
+                real_irls_max_iter=min(inner_limit, self.irls_real.max_iter),
+                fourier_irls_max_iter=min(inner_limit, self.irls_fourier.max_iter),
             )
 
             # Update dual variables
@@ -181,7 +216,7 @@ class ADMMEstimator(Estimator):
             state.dual_vars += state.mu * primal_residual
 
             # Convergence check only every five iterations to save time
-            if i % 5 != 4:
+            if (i + 1) % self.check_every != 0 and i + 1 != self.max_iter:
                 state.reference_real = results.next_real
                 state.reference_fourier = results.next_fourier
                 continue
@@ -195,9 +230,15 @@ class ADMMEstimator(Estimator):
 
             state.reference_real = results.next_real
             state.reference_fourier = results.next_fourier
+            self.diagnostics.update(
+                primal_residual=float(primal_norm), dual_residual=float(dual_norm),
+                primal_threshold=float(eps_primal), dual_threshold=float(eps_dual),
+                residual_mu=float(state.mu),
+            )
 
             if primal_norm < eps_primal and dual_norm < eps_dual:
                 self.converged = True
+                self.diagnostics["stop_reason"] = "tolerance"
                 break
 
             state.mu = self._mu_update(state.mu, primal_norm, dual_norm)
@@ -207,6 +248,13 @@ class ADMMEstimator(Estimator):
             state.reference_fourier, s=real_shape, norm="ortho"
         )
         estimate = 0.5 * (state.reference_real + fourier_ref_to_real)
+        self.diagnostics.update(
+            n_iter=self.n_its, converged=self.converged, mu_final=float(state.mu),
+            state_disagreement=float(np.linalg.norm(state.reference_real - fourier_ref_to_real)),
+        )
+        if results is not None:
+            self.diagnostics["real_inner"] = self.irls_real.diagnostics.copy()
+            self.diagnostics["fourier_inner"] = self.irls_fourier.solver.diagnostics.copy()
 
         if results is None:
             weight_shape = (images.n_images,) + (1,) * (images.real.ndim - 1)
@@ -219,13 +267,16 @@ class ADMMEstimator(Estimator):
         return EstimatorResult(
             real_estimate=estimate,
             weights={"real": weights_real, "fourier": weights_fourier},
+            diagnostics=self.diagnostics.copy(),
         )
 
     def _mu_update(self, mu: float, primal_norm: float, dual_norm: float) -> float:
-        if primal_norm > 10 * dual_norm:
-            return 2.0 * mu
-        if dual_norm > 10 * primal_norm:
-            return 0.5 * mu
+        if not self.adaptive_mu:
+            return mu
+        if primal_norm > self.mu_balance_ratio * dual_norm:
+            return self.mu_increase_factor * mu
+        if dual_norm > self.mu_balance_ratio * primal_norm:
+            return mu / self.mu_decrease_factor
         return mu
 
     def _residuals(
