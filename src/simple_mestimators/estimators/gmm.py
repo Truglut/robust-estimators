@@ -35,8 +35,8 @@ class RecursiveGMMEstimator(Estimator):
     Recursive robust averaging with peak-corrected GMM responsibilities.
 
     Unusable iterations stop the recursion and return the ordinary image mean
-    with unit weights. GMM parameters in the diagnostics are NaN
-    when the final attempted iteration did not produce a valid model.
+    with unit weights. For rejected models the array diagnostics describe the
+    attempted fit, while scalar diagnostics flag the fallback explicitly.
 
     The good component has the lower mean distance. By default, reject models
     whose mean separation divided by ``sqrt(var_1 + var_2)`` is below a certain
@@ -60,6 +60,9 @@ class RecursiveGMMEstimator(Estimator):
         check_degenerate_model: bool = True,
         min_component_separation: float = GMM_MIN_SEPARATION,
         min_good_component_weight: float = GMM_MIN_GOOD_COMPONENT_WEIGHT,
+        reg_covar: float = 1.0e-6,
+        n_init: int = 1,
+        init_params: str = "kmeans",
     ):
         self.model = GaussianMixture(
             n_components=2,
@@ -67,6 +70,9 @@ class RecursiveGMMEstimator(Estimator):
             tol=gmm_tol,
             random_state=random_state,
             warm_start=True,
+            reg_covar=reg_covar,
+            n_init=n_init,
+            init_params=init_params,  # type: ignore
         )
 
         self.distance_function = distance_function
@@ -85,9 +91,13 @@ class RecursiveGMMEstimator(Estimator):
 
         self.gmm_max_iter = gmm_max_iter
         self.gmm_tol = gmm_tol
+        self.reg_covar = reg_covar
+        self.n_init = n_init
+        self.init_params = init_params
 
         self.n_its = None
         self.converged = False
+        self.diagnostics = {}
 
     def _new_model(self) -> GaussianMixture:
         """Create a fresh GMM, resetting any state from previous ``fit`` calls."""
@@ -97,6 +107,9 @@ class RecursiveGMMEstimator(Estimator):
             tol=self.gmm_tol,
             random_state=self.model.random_state,  # type: ignore
             warm_start=True,
+            reg_covar=self.reg_covar,
+            n_init=self.n_init,
+            init_params=self.init_params,  # type: ignore
         )
 
     def _initialize_model_params(self, distances: np.ndarray) -> None:
@@ -222,7 +235,30 @@ class RecursiveGMMEstimator(Estimator):
         )
 
         degenerate = False
-        if self.check_degenerate_model and any(self._degeneracy_checks()):
+        separation_failed, mass_failed = self._degeneracy_checks()
+        self.diagnostics.update(
+            gmm_converged=bool(self.model.converged_),
+            gmm_n_iter=int(self.model.n_iter_),
+            component_means=list(self.get_model_means()),
+            component_variances=list(self.get_model_variances()),
+            component_weights=list(self.get_model_weights()),
+            component_separation=float(
+                abs(self.model.means_[0, 0] - self.model.means_[1, 0])  # type: ignore
+                / np.sqrt(sum(self.get_model_variances()))
+            ),
+            good_component_weight=float(
+                self.get_model_weights()[self.get_good_component_idx()]
+            ),
+        )
+        if self.check_degenerate_model and (separation_failed or mass_failed):
+            reasons = []
+            if separation_failed:
+                reasons.append("insufficient_separation")
+            if mass_failed:
+                reasons.append("insufficient_good_component_weight")
+            self.diagnostics.update(
+                fallback=True, fallback_reasons=reasons, stop_reason="fallback"
+            )
             degenerate = True
             estimate = images.mean(axis=0)
             weights = np.ones(shape=weight_shape, dtype=images.dtype)
@@ -248,6 +284,16 @@ class RecursiveGMMEstimator(Estimator):
 
         self.converged = False
         self.n_its = 0
+        self.diagnostics = {
+            "n_iter": 0,
+            "converged": False,
+            "stop_reason": "max_iter",
+            "relative_change": None,
+            "fallback": False,
+            "fallback_reasons": [],
+            "gmm_converged": None,
+            "gmm_n_iter": None,
+        }
 
         weight_shape = (images.shape[0],) + (1,) * (images.ndim - 1)
         weights = np.ones(shape=weight_shape, dtype=np.float64)
@@ -255,6 +301,7 @@ class RecursiveGMMEstimator(Estimator):
         diagnostics = None
         for i in range(self.max_iter):
             self.n_its = i + 1
+            self.diagnostics["n_iter"] = self.n_its
             degenerate, estimate, weights, diagnostics = self._fit_one_iteration(
                 images, reference, initialize_params=self.initialize_params and i == 0
             )
@@ -267,9 +314,11 @@ class RecursiveGMMEstimator(Estimator):
                 reference
             ).clip(min=1.0e-8)
             reference = estimate
+            self.diagnostics["relative_change"] = float(rel_change)
 
             if rel_change < self.tol:
                 self.converged = True
+                self.diagnostics.update(converged=True, stop_reason="tolerance")
                 break
 
         return reference, weights, diagnostics
@@ -284,6 +333,7 @@ class RecursiveGMMEstimator(Estimator):
             real_estimate=estimate,
             weights={"real": weights, "fourier": None},
             gmm_diagnostics=diagnostics,
+            diagnostics=self.diagnostics.copy(),
         )
 
 
@@ -316,4 +366,5 @@ class FourierGMM(Estimator):
             real_estimate=estimate,
             weights={"real": None, "fourier": weights},
             gmm_diagnostics=diagnostics,
+            diagnostics=self.solver.diagnostics.copy(),
         )
