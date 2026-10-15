@@ -59,7 +59,7 @@ def tagare_distance(
     reference: np.ndarray,
     std: np.ndarray | float = 1.0,
     beta: float = 1.0e-6,
-    eps: float = 1.0e-6,
+    eps: float = 1.0e-8,
 ) -> np.ndarray:
     """
     Calculates the distance based on Tagare weights (similarity) between the
