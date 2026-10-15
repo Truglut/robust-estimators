@@ -37,6 +37,9 @@ EstimatorTypeName = Literal[
 def _build_m_estimator(
     params: dict, image_batch: ImageBatch, space: ImageSpace = "real"
 ) -> IRLSSolver:
+    allowed = {"weight_function", "weight_params", "solver_params"}
+    if set(params) - allowed:
+        raise ValueError(f"Unknown IRLS parameters: {sorted(set(params) - allowed)}")
     weight_func = get_weight_function(
         name=params["weight_function"],
         params=params.get("weight_params", {}),
@@ -91,6 +94,12 @@ def _build_recursive_gmm(
 
 
 def _build_admm(params: dict, image_batch: ImageBatch) -> ADMMEstimator:
+    allowed = {"solver_params", "real_estimator", "fourier_estimator"}
+    if set(params) - allowed:
+        raise ValueError(f"Unknown ADMM parameters: {sorted(set(params) - allowed)}")
+    for key, expected in (("real_estimator", "m_estimator"), ("fourier_estimator", "joint_fourier")):
+        if params[key].get("type", expected) != expected:
+            raise ValueError(f"ADMM {key}.type must be {expected!r}")
     real_params = params["real_estimator"]
     if "params" in real_params:
         real_params = real_params["params"]
