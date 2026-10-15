@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -22,3 +23,4 @@ class EstimatorResult:
     real_estimate: np.ndarray
     weights: dict[ImageSpace, np.ndarray | None]
     gmm_diagnostics: GMMDiagnostics | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
