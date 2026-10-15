@@ -148,4 +148,5 @@ class JointIRLSFourier(Estimator):
                 fourier_estimate, s=images.real_shape, norm=images.norm
             ),
             weights={"real": None, "fourier": weights},
+            diagnostics=self.solver.diagnostics.copy(),
         )
