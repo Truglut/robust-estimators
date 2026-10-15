@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose, assert_array_equal
 
-from scripts.simulations.configs import DatasetConfig, PreprocessingConfig
-from scripts.simulations.dataset_builder import create_evaluation_dataset, get_dataset_labels
-from scripts.simulations.run_simulation import prepare_simulation_dataset, preprocess_images
+from scripts.experiments.configs import DatasetConfig, PreprocessingConfig
+from scripts.experiments.dataset_builder import create_evaluation_dataset, get_dataset_labels
+from scripts.experiments.run_simulation import prepare_simulation_dataset, preprocess_images
 
 
 @pytest.mark.parametrize("standardize_reference", [False, True])

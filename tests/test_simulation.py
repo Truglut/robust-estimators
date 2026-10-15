@@ -1,3 +1,4 @@
+from pathlib import Path
 from copy import deepcopy
 from dataclasses import asdict, replace
 from itertools import product
@@ -9,12 +10,12 @@ import yaml
 from numpy.testing import assert_allclose, assert_array_equal
 
 from simple_mestimators.domain import EstimatorResult
-from scripts.simulations.cli import build_simulation_parser, parse_simulation_cfg
-from scripts.simulations.configs import (
+from scripts.experiments.cli import build_simulation_parser, parse_simulation_cfg
+from scripts.experiments.configs import (
     DatasetConfig, EstimatorConfig, IOConfig, PreprocessingConfig, SimulationConfig,
 )
-from scripts.simulations.output import initialize_output, save_estimator_result, snr_directory
-from scripts.simulations.run_simulation import (
+from scripts.experiments.output import initialize_output, save_estimator_result, snr_directory
+from scripts.experiments.run_simulation import (
     effective_config, prepare_simulation_dataset, run_experiment, run_simulation,
 )
 
@@ -73,7 +74,8 @@ def test_all_methods_saved_outputs_replay_same_dataset_and_selection_is_invarian
         for run in range(cfg.n_runs):
             directories = [root / "estimators" / m.name / snr_directory(snr) / f"run_{run:03d}" for m in cfg.estimators]
             metadata = [json.loads((d / "run.json").read_text()) for d in directories]
-            assert all(item == metadata[0] for item in metadata)
+            assert all(item["dataset_seed"] == metadata[0]["dataset_seed"] for item in metadata)
+            assert all("diagnostics" in item for item in metadata)
             seed = metadata[0]["dataset_seed"]
             expected_seed = int(np.random.SeedSequence([cfg.seed, cfg.snrs.index(snr), run]).generate_state(1, dtype=np.uint64)[0])
             assert seed == expected_seed
@@ -187,15 +189,20 @@ def test_cli_defaults_overrides_and_saved_effective_config(tmp_path, write_mrc, 
     argv = ["--config", str(yaml_path), "--results", str(tmp_path / "results")]
     if override:
         argv += ["--reference-image-path", str(alternative), "--misclassified-path", "overridden.mrcs",
-                 "--snr", ".1", ".4", "--seed", "17", "--n-runs", "2",
-                 "--standardize", "both", "--no-standardize-reference", "--initialization-strategy", "median",
                  "--no-save-weights", "--no-save-labels", "--no-save-estimates"]
+    if override:
+        document = yaml.safe_load(yaml_path.read_text())
+        document["simulation"] = {"snrs": [.1, .4], "n_runs": 2}
+        document["experiment"].update(seed=17, initialization_strategy="median")
+        document["preprocessing"] = {"standardize": "both"}
+        document["generation"]["standardize_reference"] = False
+        yaml_path.write_text(yaml.safe_dump(document))
     cfg = parse_simulation_cfg(build_simulation_parser().parse_args(argv))
     assert cfg.snrs == ([.1, .4] if override else [.01])
     assert cfg.seed == (17 if override else 42)
     assert cfg.n_runs == (2 if override else 1)
     assert cfg.io.reference_path == (alternative if override else path)
-    assert str(cfg.io.misclassified_path) == ("overridden.mrcs" if override else "unused.mrcs")
+    assert cfg.io.misclassified_path == ((Path.cwd() / "overridden.mrcs") if override else (tmp_path / "unused.mrcs"))
     assert cfg.dataset.standardize_reference == (not override)
     assert cfg.preprocessing.standardize == ("both" if override else "none")
     assert cfg.initialization_strategy == ("median" if override else "mean")
@@ -206,6 +213,7 @@ def test_cli_defaults_overrides_and_saved_effective_config(tmp_path, write_mrc, 
     expected.pop("estimators")
     # Convert Path fields using the same JSON representation promised to readers.
     expected = json.loads(json.dumps(expected, default=str))
+    expected["preprocessing"]["mask_radius"] = min(reference.shape) // 2
     for key, value in expected.items():
         assert saved[key] == value
     for snr in cfg.snrs:

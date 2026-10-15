@@ -15,7 +15,7 @@ from simple_mestimators.estimators.distances import mean_l2_norm
 from simple_mestimators.estimators.fourier_irls import JointIRLSFourier
 from simple_mestimators.estimators.gmm import RecursiveGMMEstimator
 from simple_mestimators.estimators.irls import IRLSSolver
-from scripts.simulations.cli import build_simulation_parser, parse_simulation_cfg
+from scripts.experiments.cli import build_simulation_parser, parse_simulation_cfg
 from conftest import unit_weights
 
 

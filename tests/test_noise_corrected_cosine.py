@@ -14,10 +14,10 @@ from simple_mestimators.estimators.noise_corrected_cosine import (
     NoiseCorrectedCosineDistance, NoiseCorrectedCosineEstimator,
     estimate_noise_variance,
 )
-from scripts.simulations.configs import (
+from scripts.experiments.configs import (
     DatasetConfig, EstimatorConfig, IOConfig, PreprocessingConfig, SimulationConfig,
 )
-from scripts.simulations.run_simulation import (
+from scripts.experiments.run_simulation import (
     PreparedSimulationDataset, effective_config, run_experiment, run_simulation,
 )
 
