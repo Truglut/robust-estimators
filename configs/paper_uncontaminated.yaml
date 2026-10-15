@@ -1,0 +1,146 @@
+# Uncontaminated control: same estimators and SNRs; 1000 inliers, zero outliers.
+# Scientific configuration: change this file, not CLI arguments, to change experiments.
+# Paths may instead be supplied by --reference-image-path / --misclassified-path.
+# Relative YAML paths are relative to this file; relative CLI paths to the working directory.
+# null mask_radius selects min(h//2, w//2), saved numerically in config.json.
+# No residual rotations; reference scaling divides by std without mean subtraction.
+# SNR uses the unmasked clean inlier variance; noise is added before the circular mask.
+# Fixed algorithm conventions: rfft2/ortho; empirical complex variance includes real+imag;
+# no standalone prior; two-component full-covariance GMM, warm start, monotonic correction;
+# rejected GMM -> ordinary mean and unit weights; ADMM output averages its two real states.
+# GMM initialization: explicit means/weights below; kmeans supplies remaining initialization.
+data:
+  reference_image_path: null
+  misclassified_path: null
+output:
+  save_weights: true
+  save_estimates: true
+  save_labels: true
+simulation:
+  snrs:
+  - 0.1
+  - 0.05
+  - 0.02
+  - 0.01
+  - 0.0067
+  n_runs: 10
+generation:
+  n_copies: 1000
+  n_rotated: 0
+  n_shifted: 0
+  n_misclassified: 0
+  n_noise: 0
+  max_rotation_inliers: null
+  min_rotation_outliers: null
+  max_rotation_outliers: null
+  min_rotation_misclassified: null
+  max_rotation_misclassified: null
+  min_shift_outliers: null
+  max_shift_outliers: null
+  standardize_reference: true
+preprocessing:
+  standardize: none
+  mask_radius: null
+experiment:
+  seed: 42
+  initialization_strategy: mean
+  methods:
+  - name: CC weights
+    type: m_estimator
+    params:
+      weight_function: global
+      weight_params:
+        beta: auto
+        auto_multiplier: 1.0
+        eps: 1.0e-08
+      solver_params:
+        max_iter: 50
+        tol: 1.0e-05
+        damping_coef: 0.0
+        min_weight: null
+        max_weight: null
+        eps: 1.0e-08
+  - name: Fourier IRLS
+    type: joint_fourier
+    params:
+      weight_function: smooth
+      weight_params:
+        delta: 1.5
+        eps: 1.0e-08
+      solver_params:
+        max_iter: 50
+        tol: 1.0e-05
+        damping_coef: 0.0
+        min_weight: null
+        max_weight: null
+        eps: 1.0e-08
+  - name: ADMM
+    type: admm
+    params:
+      solver_params:
+        max_iter: 30
+        initial_mu: 1.0
+        fourier_multiplier: 1.0
+        atol: 1.0e-05
+        rtol: 1.0e-05
+        eps: 1.0e-08
+        check_every: 5
+        inner_initial_iter: 5
+        inner_iter_increment: 1
+        adaptive_mu: true
+        mu_balance_ratio: 10.0
+        mu_increase_factor: 2.0
+        mu_decrease_factor: 2.0
+      real_estimator:
+        type: m_estimator
+        params:
+          weight_function: global
+          weight_params:
+            beta: auto
+            auto_multiplier: 1.0
+            eps: 1.0e-08
+          solver_params:
+            max_iter: 10
+            tol: 1.0e-05
+            damping_coef: 0.0
+            min_weight: null
+            max_weight: null
+            eps: 1.0e-08
+      fourier_estimator:
+        type: joint_fourier
+        params:
+          weight_function: smooth
+          weight_params:
+            delta: 1.5
+            eps: 1.0e-08
+          solver_params:
+            max_iter: 10
+            tol: 1.0e-05
+            damping_coef: 0.0
+            min_weight: null
+            max_weight: null
+            eps: 1.0e-08
+  - name: GMM-reweighted CC
+    type: recursive_gmm
+    params:
+      distance_function: tagare_weights
+      distance_params:
+        beta: auto
+        auto_multiplier: 1.0
+        eps: 1.0e-08
+      random_state: 42
+      max_iter: 15
+      tol: 1.0e-06
+      standardize_distances: true
+      gmm_max_iter: 20
+      gmm_tol: 0.0001
+      initialize_params: true
+      good_quantile: 0.5
+      bad_quantile: 0.95
+      bad_weight: 0.05
+      check_degenerate_model: true
+      min_component_separation: 0.2
+      min_good_component_weight: 0.5
+      reg_covar: 1.0e-06
+      n_init: 1
+      init_params: kmeans
