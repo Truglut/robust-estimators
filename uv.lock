@@ -351,33 +351,49 @@ name = "simple-mestimators"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "mrcfile" },
     { name = "numpy" },
-    { name = "pyyaml" },
     { name = "scikit-learn" },
     { name = "scipy" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "mrcfile" },
     { name = "pytest" },
+    { name = "pyyaml" },
+]
+scripts = [
+    { name = "mrcfile" },
+    { name = "pyyaml" },
 ]
 test = [
+    { name = "mrcfile" },
     { name = "pytest" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "mrcfile", specifier = ">=1.5.4" },
     { name = "numpy", specifier = ">=2.5.3" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
     { name = "scipy", specifier = ">=1.18.1" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.1.1" }]
-test = [{ name = "pytest", specifier = ">=8" }]
+dev = [
+    { name = "mrcfile", specifier = ">=1.5.4" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+]
+scripts = [
+    { name = "mrcfile", specifier = ">=1.5.4" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+]
+test = [
+    { name = "mrcfile", specifier = ">=1.5.4" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+]
 
 [[package]]
 name = "threadpoolctl"
