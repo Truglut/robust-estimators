@@ -1,4 +1,4 @@
-# simple-mestimators
+# robust-estimators
 
 Robust estimation of aligned 2D cryo-EM images, with real/Fourier IRLS,
 ADMM-derived coupling, and recursive GMM reweighting.
